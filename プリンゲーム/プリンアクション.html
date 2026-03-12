@@ -1,0 +1,5488 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>プリンアクションゲーム - 横スクロール</title>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  body, html {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background-color: #5D9CEC;
+    font-family: 'Orbitron', sans-serif;
+  }
+  canvas {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+  }
+</style>
+</head>
+<body>
+
+<canvas id="gameCanvas"></canvas>
+
+<script>
+  const canvas = document.getElementById('gameCanvas');
+  const ctx = canvas.getContext('2d');
+
+  function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // --- 簡易SFX（仮） ---
+  let audioCtx;
+  let masterGain;
+  let masterComp;
+  const COIN_SFX_FILE = 'coin.mp3';
+  const CUSTOM_SFX_FILES = {
+    slash: '斬撃.mp3',
+    rush: 'ラッシュ.mp3',
+    spin: 'スピン.mp3',
+    heal: 'ヒール.mp3',
+    hit: 'ヒット.mp3',
+    hurt: 'ダメージ.mp3',
+    dodge: '回避.mp3',
+    guard: 'ガード.mp3',
+    guardStart: 'ガード発動.mp3',
+    jump: 'ジャンプ.mp3',
+    land: '着地.mp3',
+    rotate: 'コマンド回転.mp3',
+    basic: 'たたかう.mp3',
+    fire: 'ファイア.mp3',
+    thunder: 'サンダー.mp3',
+    ice: 'ブリザド.mp3',
+    aero: 'エアロ.mp3',
+    lockon: 'ロックオン.mp3',
+    lockoff: 'ロック解除.mp3',
+    lockfail: 'ロック失敗.mp3',
+    coin: COIN_SFX_FILE,
+    gameover: 'ゲームオーバー効果音.mp3'
+  };
+  const CUSTOM_SFX_EXTS = ['.mp3', '.wav'];
+  const BGM_FILE = '背景音楽.mp3';
+  const GAMEOVER_BGM_FILE = 'ゲームオーバーBGM.mp3';
+  const BGM_VOLUME = 0.45;
+  const GAMEOVER_BGM_VOLUME = 0.5;
+  const CUSTOM_SFX_VOLUME = {
+    coin: 0.35
+  };
+  const customSfx = {};
+  const customSfxState = {};
+  let customSfxLoaded = false;
+  let bgmAudio = null;
+  let bgmState = 'idle';
+  let bgmAutoStart = false;
+  let bgmFade = 1;
+  let bgmFadeOut = false;
+  let gameOverBgmAudio = null;
+  let gameOverBgmState = 'idle';
+  let gameOverBgmAutoStart = false;
+  let gameOverBgmStarted = false;
+
+  function buildSfxCandidates(name) {
+    const base = name.replace(/\.(mp3|wav)$/i, '');
+    return CUSTOM_SFX_EXTS.map(ext => `${base}${ext}`);
+  }
+  function initAudio() {
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      masterGain = audioCtx.createGain();
+      masterGain.gain.setValueAtTime(0.72, audioCtx.currentTime);
+      masterComp = audioCtx.createDynamicsCompressor();
+      masterComp.threshold.setValueAtTime(-18, audioCtx.currentTime);
+      masterComp.knee.setValueAtTime(18, audioCtx.currentTime);
+      masterComp.ratio.setValueAtTime(4, audioCtx.currentTime);
+      masterComp.attack.setValueAtTime(0.003, audioCtx.currentTime);
+      masterComp.release.setValueAtTime(0.12, audioCtx.currentTime);
+      masterGain.connect(masterComp);
+      masterComp.connect(audioCtx.destination);
+    }
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume();
+    }
+    initCustomSfx();
+    initBgm();
+    startBgm();
+  }
+
+  function initCustomSfx() {
+    if (customSfxLoaded) return;
+    customSfxLoaded = true;
+    Object.entries(CUSTOM_SFX_FILES).forEach(([key, filename]) => {
+      const audio = new Audio();
+      audio.preload = 'auto';
+      audio.volume = CUSTOM_SFX_VOLUME[key] ?? 1;
+      const candidates = buildSfxCandidates(filename);
+      let idx = 0;
+      customSfxState[key] = 'loading';
+      const tryNext = () => {
+        if (customSfxState[key] === 'ready') return;
+        if (idx >= candidates.length) {
+          customSfxState[key] = 'error';
+          return;
+        }
+        audio.src = candidates[idx++];
+        audio.load();
+      };
+      audio.addEventListener('canplaythrough', () => {
+        customSfxState[key] = 'ready';
+      }, { once: true });
+      audio.addEventListener('error', () => {
+        if (customSfxState[key] === 'ready') return;
+        tryNext();
+      });
+      tryNext();
+      customSfx[key] = audio;
+    });
+  }
+
+  function initBgm() {
+    if (bgmAudio) return;
+    bgmAudio = new Audio();
+    bgmAudio.preload = 'auto';
+    bgmAudio.loop = true;
+    bgmAudio.volume = BGM_VOLUME;
+    const candidates = buildSfxCandidates(BGM_FILE);
+    let idx = 0;
+    bgmState = 'loading';
+    const tryNext = () => {
+      if (bgmState === 'ready') return;
+      if (idx >= candidates.length) {
+        bgmState = 'error';
+        return;
+      }
+      bgmAudio.src = candidates[idx++];
+      bgmAudio.load();
+    };
+    bgmAudio.addEventListener('canplaythrough', () => {
+      bgmState = 'ready';
+      if (bgmAutoStart) startBgm();
+    }, { once: true });
+    bgmAudio.addEventListener('error', () => {
+      if (bgmState === 'ready') return;
+      tryNext();
+    });
+    tryNext();
+  }
+
+  function startBgm() {
+    if (!bgmAudio) {
+      bgmAutoStart = true;
+      initBgm();
+      return;
+    }
+    if (bgmState !== 'ready') {
+      bgmAutoStart = true;
+      return;
+    }
+    bgmAutoStart = false;
+    try {
+      if (bgmAudio) bgmAudio.volume = BGM_VOLUME * bgmFade;
+      const p = bgmAudio.play();
+      if (p && p.catch) p.catch(() => {});
+    } catch (_) {}
+  }
+
+  function initGameOverBgm() {
+    if (gameOverBgmAudio) return;
+    gameOverBgmAudio = new Audio();
+    gameOverBgmAudio.preload = 'auto';
+    gameOverBgmAudio.loop = true;
+    gameOverBgmAudio.volume = GAMEOVER_BGM_VOLUME;
+    const candidates = buildSfxCandidates(GAMEOVER_BGM_FILE);
+    let idx = 0;
+    gameOverBgmState = 'loading';
+    const tryNext = () => {
+      if (gameOverBgmState === 'ready') return;
+      if (idx >= candidates.length) {
+        gameOverBgmState = 'error';
+        return;
+      }
+      gameOverBgmAudio.src = candidates[idx++];
+      gameOverBgmAudio.load();
+    };
+    gameOverBgmAudio.addEventListener('canplaythrough', () => {
+      gameOverBgmState = 'ready';
+      if (gameOverBgmAutoStart) startGameOverBgm();
+    }, { once: true });
+    gameOverBgmAudio.addEventListener('error', () => {
+      if (gameOverBgmState === 'ready') return;
+      tryNext();
+    });
+    tryNext();
+  }
+
+  function startGameOverBgm() {
+    if (!gameOverBgmAudio) {
+      gameOverBgmAutoStart = true;
+      initGameOverBgm();
+      return;
+    }
+    if (gameOverBgmState !== 'ready') {
+      gameOverBgmAutoStart = true;
+      return;
+    }
+    gameOverBgmAutoStart = false;
+    gameOverBgmAudio.volume = GAMEOVER_BGM_VOLUME;
+    try {
+      gameOverBgmAudio.currentTime = 0;
+      const p = gameOverBgmAudio.play();
+      if (p && p.catch) p.catch(() => {});
+    } catch (_) {}
+  }
+
+  function stopGameOverBgm() {
+    if (!gameOverBgmAudio) return;
+    gameOverBgmAudio.pause();
+    gameOverBgmAudio.currentTime = 0;
+    gameOverBgmStarted = false;
+    gameOverBgmAutoStart = false;
+  }
+
+  function updateBgmFade() {
+    if (!bgmAudio) return;
+    if (!gameOver && gameOverBgmStarted) {
+      stopGameOverBgm();
+    }
+    if (bgmFadeOut) {
+      bgmFade = Math.max(0, bgmFade - 0.02);
+      bgmAudio.volume = BGM_VOLUME * bgmFade;
+      if (bgmFade === 0) {
+        bgmAudio.pause();
+        if (gameOver && !gameOverBgmStarted) {
+          gameOverBgmStarted = true;
+          startGameOverBgm();
+        }
+      }
+    } else if (!gameOver && bgmFade < 1) {
+      bgmFade = Math.min(1, bgmFade + 0.03);
+      bgmAudio.volume = BGM_VOLUME * bgmFade;
+    }
+  }
+
+  function triggerGameOverAudio() {
+    playSfx('gameover');
+    bgmFadeOut = true;
+  }
+
+  function playCustomSfx(name, options = {}) {
+    const audio = customSfx[name];
+    if (!audio) return false;
+    if (customSfxState[name] === 'error') return false;
+    if (audio.readyState < 2) return false;
+    try {
+      const inst = audio.cloneNode();
+      inst.volume = options.volume ?? audio.volume ?? 1;
+      inst.playbackRate = options.rate ?? 1;
+      inst.play().catch(() => {});
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function playTone(freq, duration, type, gain, detune = 0) {
+    if (!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    osc.type = type || 'sawtooth';
+    osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+    osc.detune.setValueAtTime(detune, audioCtx.currentTime);
+    g.gain.setValueAtTime(gain, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+    osc.connect(g);
+    g.connect(masterGain || audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + duration + 0.02);
+  }
+
+  function playSweepTone(freqStart, freqEnd, duration, type, gain, detune = 0) {
+    if (!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    const filter = audioCtx.createBiquadFilter();
+    const now = audioCtx.currentTime;
+    const safeEnd = Math.max(40, freqEnd);
+    osc.type = type || 'sawtooth';
+    osc.frequency.setValueAtTime(Math.max(40, freqStart), now);
+    osc.frequency.exponentialRampToValueAtTime(safeEnd, now + duration);
+    osc.detune.setValueAtTime(detune, now);
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(Math.max(freqStart, safeEnd) * 2.2, now);
+    g.gain.setValueAtTime(gain, now);
+    g.gain.exponentialRampToValueAtTime(0.0008, now + duration);
+    osc.connect(filter);
+    filter.connect(g);
+    g.connect(masterGain || audioCtx.destination);
+    osc.start();
+    osc.stop(now + duration + 0.03);
+  }
+
+  function playNoise(duration, gain, filterType = 'highpass', freq = 800, freqEnd = null) {
+    if (!audioCtx) return;
+    const buffer = audioCtx.createBuffer(1, audioCtx.sampleRate * duration, audioCtx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * 0.6;
+    const src = audioCtx.createBufferSource();
+    src.buffer = buffer;
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = filterType;
+    const now = audioCtx.currentTime;
+    filter.frequency.setValueAtTime(freq, now);
+    if (freqEnd !== null) {
+      filter.frequency.exponentialRampToValueAtTime(Math.max(60, freqEnd), now + duration);
+    }
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(gain, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + duration);
+    src.connect(filter);
+    filter.connect(g);
+    g.connect(masterGain || audioCtx.destination);
+    src.start();
+    src.stop(now + duration + 0.02);
+  }
+
+  function playSfx(name) {
+    if (!audioCtx) initAudio();
+    if (!audioCtx) return;
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    if (playCustomSfx(name)) return;
+    const det = (Math.random() - 0.5) * 120;
+    switch (name) {
+      case 'slash':
+        playSweepTone(1400, 260, 0.12, 'sawtooth', 0.22, det - 200);
+        playSweepTone(900, 420, 0.08, 'triangle', 0.12, det + 100);
+        playNoise(0.08, 0.1, 'highpass', 3200, 1500);
+        playTone(180, 0.08, 'sine', 0.08, det);
+        break;
+      case 'rush':
+        playSweepTone(1000, 220, 0.14, 'square', 0.2, det);
+        playSweepTone(520, 180, 0.12, 'sawtooth', 0.12, det - 200);
+        playNoise(0.12, 0.12, 'highpass', 2400, 1200);
+        playTone(140, 0.08, 'sine', 0.07, det - 40);
+        break;
+      case 'spin':
+        playSweepTone(980, 160, 0.24, 'sawtooth', 0.22, det - 120);
+        playSweepTone(620, 140, 0.18, 'square', 0.16, det - 80);
+        playTone(760, 0.16, 'triangle', 0.12, det + 120);
+        playNoise(0.14, 0.12, 'bandpass', 1400, 700);
+        playTone(90, 0.16, 'sine', 0.08, det - 60);
+        break;
+      case 'fire':
+        playSweepTone(1200, 300, 0.14, 'sawtooth', 0.2, det + 60);
+        playSweepTone(640, 240, 0.1, 'triangle', 0.12, det - 80);
+        playNoise(0.12, 0.12, 'highpass', 2600, 1400);
+        playTone(220, 0.08, 'sine', 0.08, det - 60);
+        break;
+      case 'thunder':
+        playNoise(0.18, 0.16, 'bandpass', 1200, 320);
+        playSweepTone(480, 80, 0.22, 'square', 0.24, det - 120);
+        playTone(70, 0.22, 'sine', 0.11, det - 160);
+        break;
+      case 'ice':
+        playTone(1320, 0.12, 'triangle', 0.14, det + 80);
+        playTone(1760, 0.1, 'sine', 0.1, det + 20);
+        playNoise(0.08, 0.06, 'highpass', 4200, 2600);
+        break;
+      case 'aero':
+        playNoise(0.16, 0.12, 'highpass', 2000, 900);
+        playSweepTone(520, 1280, 0.14, 'triangle', 0.12, det + 60);
+        playTone(900, 0.1, 'sine', 0.08, det - 40);
+        break;
+      case 'heal':
+        playTone(520, 0.22, 'sine', 0.16, det);
+        playTone(780, 0.2, 'sine', 0.12, det + 40);
+        playTone(1040, 0.16, 'triangle', 0.1, det - 60);
+        playNoise(0.12, 0.05, 'highpass', 3000, 2000);
+        break;
+      case 'hit':
+        playSweepTone(240, 90, 0.12, 'square', 0.2, det);
+        playTone(60, 0.18, 'sine', 0.08, det - 120);
+        playNoise(0.08, 0.12, 'bandpass', 900, 520);
+        break;
+      case 'hurt':
+        playSweepTone(200, 70, 0.2, 'sawtooth', 0.22, det - 180);
+        playNoise(0.14, 0.12, 'bandpass', 520, 320);
+        break;
+      case 'dodge':
+        playNoise(0.12, 0.11, 'highpass', 2400, 1400);
+        playSweepTone(600, 260, 0.1, 'triangle', 0.12, det + 80);
+        break;
+      case 'guard':
+        playNoise(0.08, 0.12, 'bandpass', 1800, 900);
+        playSweepTone(1400, 420, 0.1, 'square', 0.18, det + 120);
+        playTone(220, 0.08, 'sine', 0.1, det - 40);
+        break;
+      case 'guardStart':
+        playSweepTone(980, 1560, 0.08, 'triangle', 0.12, det + 40);
+        playTone(520, 0.06, 'sine', 0.1, det - 20);
+        playNoise(0.05, 0.05, 'highpass', 2600, 1800);
+        break;
+      case 'jump':
+        playSweepTone(420, 780, 0.08, 'triangle', 0.13, det + 60);
+        playTone(660, 0.05, 'sine', 0.08, det);
+        break;
+      case 'land':
+        playSweepTone(180, 80, 0.12, 'square', 0.16, det - 80);
+        playNoise(0.08, 0.08, 'lowpass', 520, 220);
+        break;
+      case 'rotate':
+        playTone(880, 0.05, 'sine', 0.09, det);
+        playTone(1320, 0.05, 'triangle', 0.07, det + 60);
+        playNoise(0.04, 0.03, 'highpass', 2500, 1800);
+        break;
+      case 'basic':
+        playSweepTone(1200, 220, 0.12, 'sawtooth', 0.2, det + 40);
+        playTone(160, 0.1, 'sine', 0.08, det - 120);
+        playNoise(0.08, 0.09, 'highpass', 2600, 1400);
+        break;
+      case 'lockon':
+        playTone(980, 0.09, 'sine', 0.14, det);
+        playTone(1470, 0.06, 'triangle', 0.1, det + 30);
+        break;
+      case 'lockoff':
+        playSweepTone(720, 260, 0.1, 'sine', 0.12, det - 80);
+        break;
+      case 'lockfail':
+        playTone(220, 0.08, 'square', 0.08, det - 100);
+        break;
+      case 'coin':
+        playTone(1320, 0.06, 'triangle', 0.08, det + 40);
+        playTone(1860, 0.05, 'sine', 0.06, det + 80);
+        playNoise(0.035, 0.03, 'highpass', 3200, 2000);
+        break;
+      case 'gameover':
+        playSweepTone(680, 160, 0.26, 'sawtooth', 0.2, det - 120);
+        playTone(120, 0.35, 'sine', 0.12, det - 200);
+        playNoise(0.12, 0.18, 'bandpass', 520, 260);
+        break;
+      default:
+        break;
+    }
+  }
+
+  window.addEventListener('pointerdown', initAudio);
+
+  const keys = { Left: false, Right: false, Up: false, Down: false, Action: false, Rotate: false, Dodge: false, Lock: false, Basic: false };
+  const gpKeys = { Left: false, Right: false, Up: false, Down: false };
+  let gpJump = false;
+  let gamepadIndex = null;
+  let gamepadPrevButtons = [];
+  let lastRumbleAt = 0;
+  let rumbleTestActive = false;
+  let rumbleTestStrengthIndex = 0;
+  let rumbleTestPatternIndex = 0;
+  let rumbleTestClock = 0;
+  let rumbleToggleQueued = false;
+  let rumbleStrengthQueued = false;
+  let rumblePatternQueued = false;
+  let actionQueued = false;
+  let rotateQueued = 0;
+  let dodgeQueued = false;
+  let lockQueued = false;
+  let basicQueued = false;
+  let restartQueued = false;
+
+  function applyDeadzone(v, dz = 0.25) {
+    const av = Math.abs(v);
+    if (av < dz) return 0;
+    const scaled = (av - dz) / (1 - dz);
+    return Math.sign(v) * scaled;
+  }
+
+  function getActiveGamepad() {
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    if (gamepadIndex !== null && pads[gamepadIndex] && pads[gamepadIndex].connected) {
+      return pads[gamepadIndex];
+    }
+    for (let i = 0; i < pads.length; i++) {
+      if (pads[i] && pads[i].connected) {
+        gamepadIndex = i;
+        return pads[i];
+      }
+    }
+    return null;
+  }
+
+  function pollGamepad() {
+    const gp = getActiveGamepad();
+    if (!gp) {
+      gpKeys.Left = gpKeys.Right = gpKeys.Up = gpKeys.Down = false;
+      gpJump = false;
+      gamepadPrevButtons = [];
+      return;
+    }
+    const buttons = gp.buttons || [];
+    const pressed = (i) => !!(buttons[i] && buttons[i].pressed);
+    const justPressed = (i) => pressed(i) && !gamepadPrevButtons[i];
+    const isDualShock = /DualShock|Wireless Controller|PS4|DS4/i.test(gp.id || '');
+    const btnMap = isDualShock ? {
+      jump: 0,    // ✕
+      basic: 1,   // ○
+      dodge: 2,   // □
+      command: 3, // △
+      lock: 5,
+      rotateR: 7,
+      rotateL: 6,
+      dpadUp: 12,
+      dpadDown: 13,
+      dpadLeft: 14,
+      dpadRight: 15,
+      start: 9
+    } : {
+      jump: 1,    // B
+      basic: 0,   // A
+      dodge: 3,   // Y
+      command: 2, // X
+      lock: 5,
+      rotateR: 7,
+      rotateL: 6,
+      dpadUp: 12,
+      dpadDown: 13,
+      dpadLeft: 14,
+      dpadRight: 15,
+      start: 9
+    };
+    const axisX = applyDeadzone(gp.axes[0] || 0, 0.25);
+    const axisY = applyDeadzone(gp.axes[1] || 0, 0.35);
+
+    const jumpHeld = pressed(btnMap.jump);
+    gpJump = jumpHeld;
+    gpKeys.Left = axisX < -0.35 || pressed(btnMap.dpadLeft);
+    gpKeys.Right = axisX > 0.35 || pressed(btnMap.dpadRight);
+    gpKeys.Up = axisY < -0.6 || pressed(btnMap.dpadUp);
+    gpKeys.Down = axisY > 0.6 || pressed(btnMap.dpadDown);
+
+    if (justPressed(btnMap.jump)) gpJump = true;              // ジャンプ（即時）
+    if (justPressed(btnMap.basic)) basicQueued = true;        // たたかう
+    if (justPressed(btnMap.command)) actionQueued = true;     // コマンド実行
+    if (justPressed(btnMap.dodge)) dodgeQueued = true;        // 回避
+    if (justPressed(btnMap.dpadDown)) rotateQueued += 1;      // D-pad 下: 上向き回転
+    if (justPressed(btnMap.dpadUp)) rotateQueued -= 1;        // D-pad 上: 下向き回転
+    if (justPressed(btnMap.rotateR)) rotateQueued += 1;       // RT: 右回転
+    if (justPressed(btnMap.rotateL)) rotateQueued -= 1;       // LT: 左回転
+    if (justPressed(btnMap.lock)) lockQueued = true;          // RB: ロックオン
+    if (justPressed(btnMap.start)) restartQueued = true;      // Start: リスタート
+    if (justPressed(btnMap.dpadRight)) rumbleToggleQueued = true; // D-pad 右: 振動テストON/OFF
+    if (justPressed(btnMap.dpadLeft)) rumbleStrengthQueued = true; // D-pad 左: 振動強度変更
+
+    gamepadPrevButtons = buttons.map(b => b.pressed);
+  }
+
+  function rumble(strength = 0.4, duration = 90, weak = null) {
+    const gp = getActiveGamepad();
+    if (!gp) return;
+    const now = performance.now();
+    if (now - lastRumbleAt < 25) return;
+    lastRumbleAt = now;
+    const actuator = gp.vibrationActuator;
+    if (actuator && actuator.playEffect) {
+      const strong = Math.max(0, Math.min(1, strength));
+      const weakMag = weak !== null ? Math.max(0, Math.min(1, weak)) : Math.max(0, Math.min(1, strength * 0.6));
+      actuator.playEffect('dual-rumble', {
+        duration,
+        strongMagnitude: strong,
+        weakMagnitude: weakMag
+      }).catch(() => {});
+    } else if (actuator && actuator.pulse) {
+      actuator.pulse(Math.max(0, Math.min(1, strength)), duration).catch(() => {});
+    }
+  }
+
+  function stopRumble() {
+    const gp = getActiveGamepad();
+    if (!gp) return;
+    const actuator = gp.vibrationActuator;
+    if (actuator && actuator.reset) {
+      actuator.reset().catch(() => {});
+    } else if (actuator && actuator.playEffect) {
+      actuator.playEffect('dual-rumble', {
+        duration: 20,
+        strongMagnitude: 0,
+        weakMagnitude: 0
+      }).catch(() => {});
+    } else if (actuator && actuator.pulse) {
+      actuator.pulse(0, 20).catch(() => {});
+    }
+  }
+
+  const RUMBLE_STRENGTHS = [0.2, 0.35, 0.5, 0.65, 0.8, 1.0];
+  const RUMBLE_PATTERNS = [
+    { name: 'steady', period: 60, sample: () => ({ strong: 1, weak: 0.6 }) },
+    { name: 'pulse', period: 90, sample: (p) => {
+      const s = 0.2 + 0.8 * Math.sin(p * Math.PI);
+      return { strong: s, weak: s * 0.55 };
+    }},
+    { name: 'heartbeat', period: 120, sample: (p) => {
+      let s = 0;
+      if (p < 0.1) s = 1;
+      else if (p < 0.18) s = 0.2;
+      else if (p < 0.3) s = 0.85;
+      return { strong: s, weak: s * 0.45 };
+    }},
+    { name: 'ramp', period: 110, sample: (p) => {
+      const s = p < 0.7 ? (p / 0.7) : Math.max(0, 1 - (p - 0.7) / 0.3);
+      return { strong: s, weak: s * 0.7 };
+    }},
+    { name: 'stutter', period: 48, sample: (p) => {
+      const on = (Math.floor(p * 10) % 2) === 0;
+      const s = on ? 0.9 : 0;
+      return { strong: s, weak: s * 0.4 };
+    }}
+  ];
+  const RUMBLE_TEST_INTERVAL = 3;
+  const RUMBLE_TEST_DURATION = 90;
+
+  function toggleRumbleTest() {
+    rumbleTestActive = !rumbleTestActive;
+    rumbleTestClock = 0;
+    if (!rumbleTestActive) stopRumble();
+  }
+
+  function bumpRumbleStrength() {
+    rumbleTestStrengthIndex = (rumbleTestStrengthIndex + 1) % RUMBLE_STRENGTHS.length;
+  }
+
+  function cycleRumblePattern() {
+    rumbleTestPatternIndex = (rumbleTestPatternIndex + 1) % RUMBLE_PATTERNS.length;
+    rumbleTestClock = 0;
+  }
+
+  function updateRumbleTest() {
+    if (!rumbleTestActive) return;
+    rumbleTestClock++;
+    if (rumbleTestClock % RUMBLE_TEST_INTERVAL !== 0) return;
+    const base = RUMBLE_STRENGTHS[rumbleTestStrengthIndex] || 0.35;
+    const pattern = RUMBLE_PATTERNS[rumbleTestPatternIndex] || RUMBLE_PATTERNS[0];
+    const phase = (rumbleTestClock % pattern.period) / pattern.period;
+    const sample = pattern.sample(phase);
+    const strong = Math.max(0, Math.min(1, base * (sample.strong ?? 0)));
+    const weak = Math.max(0, Math.min(1, base * (sample.weak ?? (sample.strong ?? 0) * 0.6)));
+    if (strong <= 0.02 && weak <= 0.02) {
+      stopRumble();
+      return;
+    }
+    rumble(strong, RUMBLE_TEST_DURATION, weak);
+  }
+
+  window.addEventListener('gamepadconnected', (e) => {
+    gamepadIndex = e.gamepad.index;
+  });
+  window.addEventListener('gamepaddisconnected', () => {
+    gamepadIndex = null;
+    gamepadPrevButtons = [];
+  });
+
+  window.addEventListener('keydown', (e) => {
+    initAudio();
+    if (e.code === 'ArrowLeft' || e.key === 'a' || e.key === 'A') keys.Left = true;
+    if (e.code === 'ArrowRight' || e.key === 'd' || e.key === 'D') keys.Right = true;
+    if (e.code === 'Space' || e.code === 'ArrowUp' || e.key === 'w' || e.key === 'W') keys.Up = true;
+    if (e.code === 'ArrowDown' || e.key === 's' || e.key === 'S') keys.Down = true;
+    if (e.code === 'KeyJ' || e.code === 'KeyZ') {
+      keys.Action = true;
+      if (!e.repeat) actionQueued = true;
+    }
+    if (e.code === 'KeyK') {
+      keys.Rotate = true;
+      if (!e.repeat) rotateQueued += 1;
+    }
+    if (e.code === 'KeyX') {
+      keys.Rotate = true;
+      if (!e.repeat) rotateQueued -= 1;
+    }
+    if (e.code === 'KeyL') {
+      keys.Rotate = true;
+      if (!e.repeat) rotateQueued -= 1;
+    }
+    if (e.code === 'KeyQ') {
+      keys.Dodge = true;
+      if (!e.repeat) dodgeQueued = true;
+    }
+    if (e.code === 'KeyE') {
+      keys.Lock = true;
+      if (!e.repeat) lockQueued = true;
+    }
+    if (e.code === 'KeyF') {
+      keys.Basic = true;
+      if (!e.repeat) basicQueued = true;
+    }
+    if (e.code === 'KeyR' && !e.repeat) restartQueued = true;
+    if (e.code === 'KeyO' && !e.repeat) rumbleToggleQueued = true;
+    if (e.code === 'KeyP' && !e.repeat) rumblePatternQueued = true;
+  });
+
+  window.addEventListener('keyup', (e) => {
+    if (e.code === 'ArrowLeft' || e.key === 'a' || e.key === 'A') keys.Left = false;
+    if (e.code === 'ArrowRight' || e.key === 'd' || e.key === 'D') keys.Right = false;
+    if (e.code === 'Space' || e.code === 'ArrowUp' || e.key === 'w' || e.key === 'W') keys.Up = false;
+    if (e.code === 'ArrowDown' || e.key === 's' || e.key === 'S') keys.Down = false;
+    if (e.code === 'KeyJ' || e.code === 'KeyZ') keys.Action = false;
+    if (e.code === 'KeyK' || e.code === 'KeyX' || e.code === 'KeyL') keys.Rotate = false;
+    if (e.code === 'KeyQ') keys.Dodge = false;
+    if (e.code === 'KeyE') keys.Lock = false;
+    if (e.code === 'KeyF') keys.Basic = false;
+  });
+
+  const GRAVITY = 0.6;
+  const FRICTION = 0.85;
+  const JUMP_FORCE = -16.5;
+  const DOUBLE_JUMP_FORCE = -13.5;
+  const JUMP_HOLD_FRAMES = 12;
+  const DOUBLE_JUMP_HOLD_FRAMES = 8;
+  const JUMP_CUT_MULT = 0.5;
+  const DOUBLE_JUMP_CUT_MULT = 0.55;
+  const SPEED = 1.3;
+  const PLAYER_ATTACK_DASH_SCALE = 0.75;
+  const PLAYER_DODGE_SPEED = 1.8;
+  const PLAYER_DODGE_BOOST = 2.0;
+  const ATTACK_RADIUS_SCALE = 0.88;
+  const ENEMY_ATTACK_RANGE_SCALE = 0.88;
+  const STAGE_LENGTH = 24000;
+  const BLOOM_ENABLED = true;
+  const BLOOM_SOFT_BLUR = 16;
+  const BLOOM_CORE_BLUR = 4;
+  const BLOOM_SOFT_ALPHA = 0.35;
+  const BLOOM_CORE_ALPHA = 0.28;
+  const COMMAND_ROTATE_FRAMES = 5;
+  const PLAYER_HIT_RADIUS = 50;
+  const ENEMY_HIT_RADIUS = 36;
+  const ENEMY_GRAVITY = 0.7;
+  const COIN_GRAVITY = 0.5;
+  const COIN_BOUNCE = 0.45;
+  const COIN_AIR_DRAG = 0.985;
+  const COIN_GROUND_DRAG = 0.86;
+  const COIN_COLLECT_RADIUS = 74;
+  const COIN_FLOAT_AMPLITUDE = 6;
+  const COIN_FLOAT_SPEED = 0.08;
+  const COIN_DROP_MIN = 3;
+  const COIN_DROP_MAX = 8;
+  const COIN_PALETTE = ['#fff2c2', '#ffd36b', '#f7b45e', '#ffe7a6', '#c89a4a'];
+  const STEP_UP_MAX = 16;
+  const STEP_DOWN_MAX = 18;
+  const SLOPE_SLIDE_MIN = 0.05;
+  const SLOPE_SLIDE_ACCEL = 2.1;
+  const SLOPE_SLIDE_MAX = 12.5;
+  const FX_WARN_CAP = 520;
+  const FX_SOFT_CAP = 820;
+  const FX_HARD_CAP = 1100;
+  const FX_FRAME_BUDGET = 220;
+  const COMBO_WINDOW = 45;
+  const COMMAND_SLOT_H = 40;
+  const COMMAND_SLOT_GAP = 6;
+  const COMMAND_ACTIVE_INDEX = 1;
+  const BASIC_COMBO_MAX = 4;
+  const BASIC_COMBO_WINDOW = 18;
+  const GUARD_DURATION = 36;
+  const GUARD_BONUS_DURATION = 42;
+  const GUARD_COOLDOWN = 70;
+  const COUNTER_WINDOW = 60;
+  const COUNTER_HIT_COUNT = 5;
+  const COUNTER_HIT_INTERVAL = 6;
+  const COUNTER_TRACK_RANGE = 920;
+  const HP_SHAKE_FRAMES = 16;
+  const LOCK_RANGE = 520;
+  const SOFT_LOCK_RANGE = 360;
+  const LOCK_BREAK_RANGE = 720;
+  const RESPAWN_DELAY = 420;
+  const FX_PALETTES = {
+    fire: ['#ff8f3d', '#ff6b4a', '#ffd36b', '#ffb25a'],
+    thunder: ['#6ecbff', '#7aa2ff', '#c18bff', '#e0f7ff'],
+    ice: ['#5cc8ff', '#7dd3ff', '#a6e7ff', '#dff9ff'],
+    aero: ['#4de8b5', '#5dffcf', '#7efff0', '#a6ffda'],
+    rush: ['#4dd4ff', '#7db7ff', '#ffd36b', '#ff89c4'],
+    spin: ['#c86bff', '#ff7ad9', '#7bffd6', '#ffd36b'],
+    slash: ['#ffd36b', '#6fd6ff', '#ff8bd1', '#a6fffa'],
+    heal: ['#8cffb3', '#b6ffca', '#7dffac'],
+    shock: ['#fff1a8', '#ffd36b', '#bfe7ff'],
+    dodge: ['#7de3ff', '#aee7ff', '#c0f4ff', '#ffd36b'],
+    guard: ['#78d7ff', '#a6f0ff', '#7ee5ff', '#ffd36b']
+  };
+  const HP_BAR_COLORS = {
+    shellTop: '#0a1117',
+    shellMid: '#05090f',
+    shellBottom: '#0a141d',
+    border: '#154432',
+    trackTop: '#0a1117',
+    trackBottom: '#05090f',
+    fillTop: 'rgb(27, 181, 20)',
+    fillBottom: 'rgb(125, 235, 31)',
+    fillGlow: 'rgba(16, 168, 110, 0.4)',
+    damageTop: 'rgba(255, 72, 72, 0.85)',
+    damageBottom: 'rgba(207, 48, 48, 0.85)',
+    damageGlow: 'rgba(255, 72, 72, 0.35)',
+    tick: 'rgba(235, 255, 245, 0.75)'
+  };
+
+  class Pudding {
+    constructor(x, y) {
+      this.startX = x;
+      this.startY = y;
+      this.x = x;
+      this.y = y;
+      this.vx = 0;
+      this.vy = 0;
+      this.width = 160;
+      this.height = 130;
+      this.onGround = false;
+      this.platform = null;
+      this.isCrouching = false;
+      this.jumpCount = 0;
+      this.maxJumps = 2;
+      this.jumpLatch = false;
+      this.jumpHold = 0;
+      this.jumpCutMul = JUMP_CUT_MULT;
+      this.groundTilt = 0;
+      
+      this.scaleX = 1;
+      this.scaleY = 1;
+      this.targetScaleX = 1;
+      this.targetScaleY = 1;
+      this.scaleVelX = 0;
+      this.scaleVelY = 0;
+      this.springness = 0.15;
+      this.damping = 0.8;
+      
+      this.leftArmOffset = 0;
+      this.rightArmOffset = 0;
+      this.armPhase = 0;
+      this.skewC = 0;
+      this.facing = 1;
+      this.maxHp = 100;
+      this.hp = this.maxHp;
+      this.invuln = 0;
+      this.attackTimer = 0;
+      this.attackTimerMax = 0;
+      this.attackType = '';
+      this.attackDash = 0;
+      this.attackComboStep = 0;
+      this.renderRot = 0;
+      this.jumpCount = 0;
+      this.jumpLatch = false;
+      this.groundTilt = 0;
+      this.dodgeTimer = 0;
+      this.dodgeTimerMax = 0;
+      this.dodgeCooldown = 0;
+      this.dodgeDir = 1;
+      this.dodgeSpeed = 0;
+      this.dodgeColor = '#aee7ff';
+      this.guardTimer = 0;
+      this.guardTimerMax = 0;
+      this.guardCooldown = 0;
+      this.guardFlash = 0;
+      this.guardSpin = 0;
+      this.guardColor = '#7ee5ff';
+      this.guardSuccessTimer = 0;
+      this.counterActive = false;
+      this.counterTimer = 0;
+      this.counterHitIndex = 0;
+      this.counterHitDelay = 0;
+      this.counterTarget = null;
+      this.counterFlash = 0;
+      this.deathFreeze = false;
+      this.deathFreezeY = 0;
+      this.hurtTimer = 0;
+      this.hurtDir = 1;
+      this.slamActive = false;
+      this.hpDisplay = this.hp;
+      this.hpLag = this.hp;
+      this.hpLagHold = 0;
+      this.lastHp = this.hp;
+    }
+
+    reset(full = false) {
+      // 穴に落ちた時などは初期位置に戻る
+      this.x = this.startX;
+      this.y = this.startY;
+      this.vx = 0;
+      this.vy = 0;
+      this.platform = null;
+      this.jumpHold = 0;
+      this.jumpCutMul = JUMP_CUT_MULT;
+      if (full) {
+        this.hp = this.maxHp;
+        this.invuln = 0;
+      }
+      this.attackTimer = 0;
+      this.attackTimerMax = 0;
+      this.attackType = '';
+      this.attackDash = 0;
+      this.attackComboStep = 0;
+      this.renderRot = 0;
+      this.dodgeTimer = 0;
+      this.dodgeTimerMax = 0;
+      this.dodgeCooldown = 0;
+      this.dodgeDir = 1;
+      this.dodgeSpeed = 0;
+      this.dodgeColor = '#aee7ff';
+      this.guardTimer = 0;
+      this.guardTimerMax = 0;
+      this.guardCooldown = 0;
+      this.guardFlash = 0;
+      this.guardSpin = 0;
+      this.guardColor = '#7ee5ff';
+      this.guardSuccessTimer = 0;
+      this.counterActive = false;
+      this.counterTimer = 0;
+      this.counterHitIndex = 0;
+      this.counterHitDelay = 0;
+      this.counterTarget = null;
+      this.counterFlash = 0;
+      this.deathFreeze = false;
+      this.deathFreezeY = 0;
+      this.hurtTimer = 0;
+      this.hurtDir = 1;
+      this.slamActive = false;
+      this.hpDisplay = this.hp;
+      this.hpLag = this.hp;
+      this.hpLagHold = 0;
+      this.lastHp = this.hp;
+    }
+
+    update(platforms) {
+      const inputEnabled = !deathSequence && !this.counterActive;
+      const inputLeft = inputEnabled && (keys.Left || gpKeys.Left);
+      const inputRight = inputEnabled && (keys.Right || gpKeys.Right);
+      const inputUp = inputEnabled && (keys.Up || gpJump);
+      const inputDown = inputEnabled && (keys.Down || gpKeys.Down);
+      this.isCrouching = (inputDown && this.onGround);
+      const wasOnGround = this.onGround;
+
+      let currentSpeed = SPEED;
+      if (this.isCrouching) currentSpeed *= 0.5;
+
+      if (inputLeft) this.vx -= currentSpeed;
+      if (inputRight) this.vx += currentSpeed;
+      
+      if (!deathSequence) {
+        this.vx *= FRICTION;
+        this.vy += GRAVITY;
+        if (this.slamActive && this.attackType === 'basic' && this.attackComboStep === BASIC_COMBO_MAX && this.vy > 0) {
+          this.vy += GRAVITY * 0.6;
+        }
+      } else {
+        this.vx *= 0.98;
+        if (!this.deathFreeze) {
+          this.vy += GRAVITY * 0.08;
+          this.vy *= 0.92;
+          if (deathTimer > 50 || (Math.abs(this.vx) < 0.35 && Math.abs(this.vy) < 0.25)) {
+            this.deathFreeze = true;
+            this.deathFreezeY = this.y;
+            this.vx = 0;
+            this.vy = 0;
+          }
+        } else {
+          this.vx = 0;
+          this.vy = 0;
+        }
+      }
+
+      if (this.attackTimer > 0) {
+        this.attackTimer--;
+        if (this.attackType === 'basic') {
+          this.renderRot += 0.04;
+          this.renderRot *= 0.9;
+        } else if (this.attackType === 'counter') {
+          this.renderRot += 0.45;
+        } else if (this.attackType === 'spin') {
+          this.renderRot += 0.6;
+        } else if (this.attackType === 'rush') {
+          this.renderRot += 0.25;
+        } else if (this.attackType) {
+          this.renderRot += 0.12;
+        }
+        if (Math.abs(this.attackDash) > 0.05) {
+          this.vx += this.attackDash * PLAYER_ATTACK_DASH_SCALE;
+          this.attackDash *= 0.82;
+        }
+        if (Math.random() < 0.25) {
+          effects.push({
+            type: 'spark',
+            x: this.x + (Math.random() - 0.5) * 60,
+            y: this.y - this.height * 0.6 + (Math.random() - 0.5) * 20,
+            vx: (Math.random() - 0.5) * 2,
+            vy: (Math.random() - 0.5) * 2,
+            gravity: 0.1,
+            life: 12,
+            maxLife: 12,
+            color: '#ffffff',
+            size: 2 + Math.random() * 2
+          });
+        }
+        if (this.attackTimer === 0) {
+          this.attackType = '';
+          this.attackComboStep = 0;
+        }
+      } else {
+        if (deathSequence) {
+          this.renderRot += this.vx * 0.015;
+          this.renderRot *= 0.92;
+        } else {
+          if (this.onGround && Math.abs(this.vx) > 0.2) {
+            this.renderRot += this.vx * 0.01;
+          }
+          this.renderRot *= 0.8;
+        }
+        if (Math.abs(this.renderRot) < 0.01) this.renderRot = 0;
+      }
+
+      if (this.dodgeCooldown > 0) this.dodgeCooldown--;
+      if (this.dodgeTimer > 0) {
+        const maxDodge = this.dodgeTimerMax || 1;
+        const prog = 1 - this.dodgeTimer / maxDodge;
+        const burst = Math.sin(Math.PI * prog);
+        this.dodgeTimer--;
+        const speed = (this.dodgeSpeed || 2.2) * (0.7 + burst * 0.65);
+        this.vx += this.dodgeDir * speed;
+        if (Math.random() < 0.85) {
+          effects.push({
+            type: 'afterimage',
+            x: this.x,
+            y: this.y,
+            life: 10,
+            maxLife: 10,
+            color: this.dodgeColor || '#b9f1ff',
+            scale: 1.15 + burst * 0.2
+          });
+        }
+        if (this.dodgeTimer % 3 === 0) {
+          spawnSparks(this.x, this.y - this.height * 0.55, 4, [this.dodgeColor, '#ffffff'], Math.PI * 0.8, 4.5, 10);
+        }
+        if (this.dodgeTimer % 4 === 0) {
+          effects.push({
+            type: 'dash',
+            x: this.x,
+            y: this.y - this.height * 0.55,
+            life: 8,
+            maxLife: 8,
+            color: this.dodgeColor,
+            len: 140,
+            angle: this.dodgeDir === 1 ? 0 : Math.PI
+          });
+        }
+        if (this.dodgeTimer === 0) {
+          this.dodgeSpeed = 0;
+        }
+      }
+      if (this.guardCooldown > 0) this.guardCooldown--;
+      if (this.guardTimer > 0) {
+        this.guardTimer--;
+        this.guardSpin += 0.22;
+        if (this.guardFlash > 0) this.guardFlash--;
+        if (this.onGround) this.vx *= 0.8;
+      } else if (this.guardFlash > 0) {
+        this.guardFlash--;
+      }
+      if (this.hurtTimer > 0) this.hurtTimer--;
+
+      const previousX = this.x;
+      if (inputLeft && !inputRight) {
+        this.facing = -1;
+      } else if (inputRight && !inputLeft) {
+        this.facing = 1;
+      }
+      this.x += this.vx;
+      if (!inputLeft && !inputRight && Math.abs(this.vx) > 0.4) {
+        this.facing = this.vx > 0 ? 1 : -1;
+      }
+
+      // 左端の壁（スタート地点から左には行けないようにする）
+      if (this.x - this.width/2 < 0) {
+        this.x = this.width/2;
+        this.vx *= -0.5;
+      }
+
+      const previousY = this.y;
+      this.y += this.vy;
+      
+      this.onGround = false;
+      this.platform = null;
+
+      const footWidth = 100;
+
+      if (!deathSequence) {
+        for (let p of platforms) {
+          if (p.ground) continue;
+          const isWithinX = (this.x + footWidth/2 > p.x) && (this.x - footWidth/2 < p.x + p.w);
+          const wasAbove = previousY <= p.y + 1; 
+          const isBelow = this.y >= p.y;
+          
+          if (this.vy > 0 && isWithinX && wasAbove && isBelow) {
+            if (!this.onGround) {
+              let impact = Math.min(this.vy, 20);
+              this.scaleVelX += impact * 0.015;
+              this.scaleVelY -= impact * 0.015;
+              if (impact > 6) {
+                playSfx('land');
+                rumble(0.42, 110, 0.3);
+              }
+              if (this.slamActive) {
+                const slamY = this.y - this.height * 0.1;
+                spawnShockwave(this.x + this.facing * 18, slamY, '#fff2a6');
+                effects.push({ type: 'ring', x: this.x + this.facing * 6, y: slamY, life: 18, maxLife: 18, r: 90, color: '#fff2a6' });
+                spawnSparks(this.x + this.facing * 10, slamY - 6, 16, '#ffe3a0', Math.PI, 6, 18);
+                screenShake += 3.2;
+                screenFlash = Math.max(screenFlash, 0.25);
+                rumble(0.6, 140, 0.35);
+                playSfx('hit');
+                this.slamActive = false;
+              }
+            }
+            this.y = p.y;
+            this.vy = 0;
+            this.onGround = true;
+            this.platform = p;
+            break;
+          }
+        }
+        if (!this.onGround) {
+          const groundPrev = groundHeightAt(previousX);
+          const groundNow = groundHeightAt(this.x);
+          const wasAboveGround = previousY <= groundPrev + 1;
+          const isBelowGround = this.y >= groundNow - 2;
+          if (this.vy > -0.2 && wasAboveGround && isBelowGround) {
+            this.y = groundNow;
+            this.vy = 0;
+            this.onGround = true;
+          }
+        }
+        if (!this.onGround && wasOnGround && this.vy >= -0.1) {
+          let bestUpY = null;
+          let bestDownY = null;
+          let bestUpPlatform = null;
+          let bestDownPlatform = null;
+          let bestDownDelta = Infinity;
+          const groundYAt = groundHeightAt(this.x);
+          const groundUp = this.y - groundYAt;
+          if (groundUp >= 0 && groundUp <= STEP_UP_MAX) {
+            bestUpY = groundYAt;
+          } else {
+            const groundDown = groundYAt - this.y;
+            if (groundDown >= 0 && groundDown <= STEP_DOWN_MAX) {
+              bestDownY = groundYAt;
+              bestDownDelta = groundDown;
+            }
+          }
+          for (let p of platforms) {
+            if (p.ground) continue;
+            const isWithinX = (this.x + footWidth/2 > p.x) && (this.x - footWidth/2 < p.x + p.w);
+            if (!isWithinX) continue;
+            const dyUp = this.y - p.y;
+            if (dyUp >= 0 && dyUp <= STEP_UP_MAX) {
+              if (bestUpY === null || p.y < bestUpY) {
+                bestUpY = p.y;
+                bestUpPlatform = p;
+              }
+              continue;
+            }
+            const dyDown = p.y - this.y;
+            if (dyDown >= 0 && dyDown <= STEP_DOWN_MAX && dyDown < bestDownDelta) {
+              bestDownDelta = dyDown;
+              bestDownY = p.y;
+              bestDownPlatform = p;
+            }
+          }
+          if (bestUpY !== null) {
+            this.y = bestUpY;
+            this.vy = 0;
+            this.onGround = true;
+            this.platform = bestUpPlatform;
+          } else if (bestDownY !== null) {
+            this.y = bestDownY;
+            this.vy = 0;
+            this.onGround = true;
+            this.platform = bestDownPlatform;
+          }
+        }
+        if (!this.onGround) {
+          const groundNow = groundHeightAt(this.x);
+          if (this.y > groundNow + 6) {
+            this.y = groundNow;
+            this.vy = Math.min(0, this.vy);
+            this.onGround = true;
+          } else if (this.y >= groundNow - STEP_DOWN_MAX && this.vy >= -2) {
+            this.y = groundNow;
+            this.vy = 0;
+            this.onGround = true;
+          }
+        }
+      } else if (this.deathFreeze) {
+        this.y = this.deathFreezeY;
+      }
+
+      if (this.onGround) {
+        this.jumpCount = 0;
+        this.jumpHold = 0;
+      }
+
+      // 落下チェック（穴に落ちたらリセット）
+      if (!deathSequence && this.y > window.innerHeight + 300) {
+        this.reset();
+      }
+
+      if (inputUp && !this.jumpLatch && (this.onGround || this.jumpCount < this.maxJumps)) {
+        const isDouble = !this.onGround;
+        this.vy = isDouble ? DOUBLE_JUMP_FORCE : JUMP_FORCE;
+        this.onGround = false;
+        this.jumpCount = Math.min(this.maxJumps, this.jumpCount + 1);
+        this.jumpLatch = true;
+        this.jumpHold = isDouble ? DOUBLE_JUMP_HOLD_FRAMES : JUMP_HOLD_FRAMES;
+        this.jumpCutMul = isDouble ? DOUBLE_JUMP_CUT_MULT : JUMP_CUT_MULT;
+        this.scaleVelX -= isDouble ? 0.18 : 0.25;
+        this.scaleVelY += isDouble ? 0.26 : 0.35;
+        this.isCrouching = false;
+        spawnSparks(this.x, this.y - this.height * 0.55, isDouble ? 8 : 6, isDouble ? '#bfe7ff' : '#ffffff', Math.PI * 0.9, 5, 12);
+        rumble(isDouble ? 0.3 : 0.36, isDouble ? 80 : 95, isDouble ? 0.18 : 0.24);
+        playSfx('jump');
+      }
+      if (!inputUp) this.jumpLatch = false;
+      if (this.jumpHold > 0) {
+        if (inputUp && this.vy < 0) {
+          this.jumpHold--;
+        } else {
+          if (this.vy < 0) this.vy *= this.jumpCutMul;
+          this.jumpHold = 0;
+        }
+      }
+
+      if (this.onGround) {
+        let targetTilt = 0;
+        let slopeDelta = 0;
+        if (!this.platform) {
+          const g1 = groundHeightAt(this.x - 20);
+          const g2 = groundHeightAt(this.x + 20);
+          slopeDelta = g2 - g1;
+          targetTilt = Math.atan2(slopeDelta, 40);
+        }
+        this.groundTilt += (targetTilt - this.groundTilt) * 0.25;
+        if (this.isCrouching && !this.platform) {
+          const slopeAbs = Math.abs(targetTilt);
+          if (slopeAbs > SLOPE_SLIDE_MIN) {
+            const dir = slopeDelta >= 0 ? 1 : -1;
+            const power = Math.min(1, slopeAbs / 0.35);
+            this.vx += dir * (SLOPE_SLIDE_ACCEL * (0.45 + 0.55 * power));
+            const maxSlide = SLOPE_SLIDE_MAX + power * 1.2;
+            if (Math.abs(this.vx) > maxSlide) this.vx = dir * maxSlide;
+            if (stageTime % 8 === 0) {
+              rumble(0.12, 70, 0.05);
+            }
+          }
+        }
+      } else {
+        this.groundTilt *= 0.85;
+      }
+
+      let speedScale = Math.abs(this.vx) * 0.01;
+      
+      if (this.isCrouching) {
+        this.targetScaleX = 1.35;
+        this.targetScaleY = 0.55;
+      } else {
+        this.targetScaleX = 1 + (this.onGround ? speedScale : -0.15); 
+        this.targetScaleY = 1 - (this.onGround ? speedScale : -0.15);
+      }
+      if (this.onGround) {
+        const slopeAbs = Math.min(0.4, Math.abs(this.groundTilt));
+        this.targetScaleX += slopeAbs * 0.25;
+        this.targetScaleY -= slopeAbs * 0.18;
+      }
+
+      this.scaleVelX += (this.targetScaleX - this.scaleX) * this.springness;
+      this.scaleVelY += (this.targetScaleY - this.scaleY) * this.springness;
+      
+      this.scaleVelX *= this.damping;
+      this.scaleVelY *= this.damping;
+
+      this.scaleX += this.scaleVelX;
+      this.scaleY += this.scaleVelY;
+
+      let targetSkew = this.onGround ? this.vx * 0.025 : this.vx * 0.01;
+      this.skewC += (targetSkew - this.skewC) * 0.3;
+
+      let targetLeft = 0;
+      let targetRight = 0;
+
+      if (!this.onGround) {
+          targetLeft = 35;
+          targetRight = 35;
+      } else if (this.isCrouching) {
+          targetLeft = -15;
+          targetRight = -15;
+      } else if (Math.abs(this.vx) > 0.5) {
+          this.armPhase += Math.abs(this.vx) * 0.1;
+          targetLeft = Math.sin(this.armPhase) * 20;
+          targetRight = -Math.sin(this.armPhase) * 20;
+      }
+
+      this.leftArmOffset += (targetLeft - this.leftArmOffset) * 0.25;
+      this.rightArmOffset += (targetRight - this.rightArmOffset) * 0.25;
+    }
+
+    draw(ctx) {
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      if (this.guardTimer > 0) {
+        const baseY = -this.height * 0.55;
+        const prog = this.guardTimer / (this.guardTimerMax || 1);
+        const pulse = 0.5 + 0.5 * Math.sin(stageTime * 0.2 + this.guardSpin);
+        const radius = this.width * 0.68 + pulse * 6;
+        const color = this.guardColor || '#7ee5ff';
+        const alpha = 0.55 + 0.35 * prog;
+        const flash = this.guardFlash > 0 ? Math.min(1, this.guardFlash / 12) : 0;
+        ctx.save();
+        ctx.translate(0, baseY);
+        ctx.globalCompositeOperation = 'lighter';
+
+        const sphere = ctx.createRadialGradient(-radius * 0.25, -radius * 0.3, radius * 0.15, 0, 0, radius);
+        sphere.addColorStop(0, colorWithAlpha('#ffffff', 0.7 * alpha));
+        sphere.addColorStop(0.4, colorWithAlpha(color, 0.65 * alpha));
+        sphere.addColorStop(1, colorWithAlpha('#1d5fae', 0.35 * alpha));
+        ctx.fillStyle = sphere;
+        ctx.beginPath();
+        ctx.arc(0, 0, radius, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.lineWidth = 3.5 + flash * 2;
+        ctx.strokeStyle = colorWithAlpha(color, 0.7 * alpha + flash * 0.4);
+        ctx.beginPath();
+        ctx.arc(0, 0, radius * 0.98, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = colorWithAlpha('#dff7ff', 0.4 * alpha);
+        ctx.beginPath();
+        ctx.arc(0, 0, radius * 0.7, this.guardSpin, this.guardSpin + Math.PI * 1.4);
+        ctx.stroke();
+        if (flash > 0.2) {
+          ctx.strokeStyle = colorWithAlpha('#ffffff', 0.7 * flash);
+          ctx.lineWidth = 2.5 + flash * 4;
+          ctx.beginPath();
+          ctx.arc(0, 0, radius * 1.15, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        ctx.globalCompositeOperation = 'screen';
+        ctx.fillStyle = colorWithAlpha('#ffffff', 0.35 * alpha);
+        ctx.beginPath();
+        ctx.ellipse(-radius * 0.25, -radius * 0.3, radius * 0.25, radius * 0.18, -0.6, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.restore();
+      }
+      const face = this.facing < 0 ? -1 : 1;
+      const hurtRatio = (!deathSequence && this.hurtTimer > 0) ? this.hurtTimer / 18 : 0;
+      const hurtRot = hurtRatio * -0.35 * this.hurtDir;
+      const groundTiltRaw = (this.groundTilt || 0) * face;
+      const scaleXAbs = Math.max(0.001, Math.abs(this.scaleX || 1));
+      const scaleYAbs = Math.max(0.001, Math.abs(this.scaleY || 1));
+      const groundTilt = Math.atan(Math.tan(groundTiltRaw) * (scaleXAbs / scaleYAbs));
+      ctx.scale(face * this.scaleX, this.scaleY);
+      ctx.rotate(this.renderRot + hurtRot + groundTilt);
+      ctx.transform(1, 0, -(this.skewC * face + groundTilt * 0.35), 1, 0, 0);
+      ctx.translate(0, -this.height);
+      const auraBoost = this.attackTimer > 0 ? 1 : 0;
+      const counterBoost = this.counterActive ? 1 : 0;
+      
+      const bodyColor = '#FEF68B'; 
+      const hatColor = '#A78149';  
+      const outlineColor = '#433224'; 
+      
+      ctx.lineWidth = 14;          
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = outlineColor;
+
+      const topW = 96;   
+      const botW = 180;  
+      const h = 136;     
+      const hatH = 28;   
+
+      if (auraBoost || counterBoost) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        const glowScale = counterBoost ? 1.45 : 1;
+        const glow = ctx.createRadialGradient(0, h * 0.65, 10, 0, h * 0.65, h * 1.3 * glowScale);
+        glow.addColorStop(0, counterBoost ? 'rgba(255,255,255,0.85)' : 'rgba(255,255,255,0.6)');
+        glow.addColorStop(0.4, counterBoost ? 'rgba(180,240,255,0.65)' : 'rgba(160,220,255,0.45)');
+        glow.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.ellipse(0, h * 0.7, 120 * (counterBoost ? 1.2 : 1), 60 * (counterBoost ? 1.15 : 1), 0, 0, Math.PI * 2);
+        ctx.fill();
+        if (counterBoost) {
+          const flash = this.counterFlash > 0 ? Math.min(1, this.counterFlash / 18) : 0;
+          ctx.strokeStyle = `rgba(255,255,255,${0.4 + 0.4 * flash})`;
+          ctx.lineWidth = 3 + flash * 3;
+          ctx.beginPath();
+          ctx.ellipse(0, h * 0.7, 140, 70, 0, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      // 左腕
+      ctx.beginPath();
+      const leftArmBaseX = -topW/2 - ((botW/2 - topW/2) * 0.55);
+      const leftArmBaseY = h * 0.55;
+      ctx.moveTo(leftArmBaseX + 6, leftArmBaseY);
+      ctx.lineTo(leftArmBaseX - 35, leftArmBaseY - 30 - this.leftArmOffset);
+      ctx.stroke();
+
+      // 右腕
+      ctx.beginPath();
+      const rightArmBaseX = topW/2 + ((botW/2 - topW/2) * 0.55);
+      const rightArmBaseY = h * 0.55;
+      ctx.moveTo(rightArmBaseX - 6, rightArmBaseY);
+      ctx.lineTo(rightArmBaseX + 35, rightArmBaseY - 30 - this.rightArmOffset);
+      ctx.stroke();
+
+      const bodyPath = new Path2D();
+      bodyPath.moveTo(-topW/2, 0);
+      bodyPath.lineTo(topW/2, 0);
+      bodyPath.lineTo(botW/2, h - 3);
+      bodyPath.quadraticCurveTo(0, h + 10, -botW/2, h - 3);
+      bodyPath.closePath();
+
+      ctx.fillStyle = bodyColor;
+      ctx.fill(bodyPath);
+
+      const hatBotW_half = topW/2 + ((botW/2 - topW/2) * (hatH/h));
+      const hatPath = new Path2D();
+      hatPath.moveTo(-topW/2, 0);
+      hatPath.lineTo(topW/2, 0);
+      hatPath.lineTo(hatBotW_half, hatH);
+      hatPath.quadraticCurveTo(0, hatH + 2, -hatBotW_half, hatH);
+      hatPath.closePath();
+      
+      ctx.fillStyle = hatColor;
+      ctx.fill(hatPath);
+
+      ctx.stroke(bodyPath);
+
+      ctx.beginPath();
+      ctx.moveTo(-hatBotW_half, hatH);
+      ctx.quadraticCurveTo(0, hatH + 2, hatBotW_half, hatH);
+      ctx.stroke();
+
+      if (this.attackType === 'basic') {
+        const maxT = this.attackTimerMax || 1;
+        const prog = Math.min(1, Math.max(0, 1 - this.attackTimer / maxT));
+        const combo = this.attackComboStep || 1;
+        const swing = getBasicSwing(combo, prog);
+
+        ctx.save();
+        const sword = getBasicSwordLocal(this, combo);
+        const handX = sword.handX;
+        const handY = sword.handY;
+        ctx.translate(handX, handY);
+        ctx.rotate(swing);
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.shadowColor = combo === 4 ? 'rgba(255,220,140,0.6)' : 'rgba(120,200,255,0.45)';
+        ctx.shadowBlur = combo === 4 ? 12 : 8;
+        const bladeLen = sword.bladeLen;
+        const bladeW = sword.bladeW;
+        const bladeGrad = ctx.createLinearGradient(0, -bladeW, bladeLen, bladeW);
+        bladeGrad.addColorStop(0, 'rgba(255,255,255,0.95)');
+        bladeGrad.addColorStop(0.55, combo === 4 ? 'rgba(255,240,180,0.95)' : 'rgba(170,220,255,0.9)');
+        bladeGrad.addColorStop(1, 'rgba(255,255,255,0.1)');
+        ctx.fillStyle = bladeGrad;
+        ctx.beginPath();
+        ctx.moveTo(0, -bladeW * 0.45);
+        ctx.lineTo(bladeLen - 10, -bladeW * 0.2);
+        ctx.lineTo(bladeLen, 0);
+        ctx.lineTo(bladeLen - 10, bladeW * 0.2);
+        ctx.lineTo(0, bladeW * 0.45);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+        ctx.lineWidth = 1.6;
+        ctx.stroke();
+
+        ctx.strokeStyle = combo === 4 ? 'rgba(255,210,140,0.7)' : 'rgba(120,180,255,0.6)';
+        ctx.lineWidth = 2.1;
+        ctx.beginPath();
+        ctx.moveTo(10, 0);
+        ctx.lineTo(bladeLen - 18, 0);
+        ctx.stroke();
+
+        // 中ほどの横棒（クロスガード風）
+        const guardX = bladeLen * 0.34;
+        ctx.fillStyle = combo === 4 ? 'rgba(255,205,130,0.95)' : 'rgba(150,200,255,0.9)';
+        ctx.fillRect(guardX - 20, -6.5, 40, 13);
+        ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+        ctx.lineWidth = 1.2;
+        ctx.strokeRect(guardX - 20, -6.5, 40, 13);
+
+        ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+        ctx.lineWidth = 1.1;
+        ctx.beginPath();
+        ctx.moveTo(8, -bladeW * 0.25);
+        ctx.lineTo(bladeLen - 12, -bladeW * 0.08);
+        ctx.stroke();
+
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = '#f2d08a';
+        ctx.beginPath();
+        ctx.moveTo(-18, -8);
+        ctx.lineTo(4, -8);
+        ctx.lineTo(6, 0);
+        ctx.lineTo(4, 8);
+        ctx.lineTo(-18, 8);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = '#b47a35';
+        ctx.fillRect(-28, -5, 10, 10);
+        ctx.fillStyle = '#5c3b21';
+        ctx.fillRect(-44, -4, 16, 8);
+        ctx.fillStyle = '#e4d1b1';
+        ctx.beginPath();
+        ctx.arc(-46, 0, 3.6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = combo === 4 ? '#ffd36a' : '#8ad4ff';
+        ctx.beginPath();
+        ctx.arc(-6, 0, 3.2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      ctx.fillStyle = outlineColor;
+      
+      ctx.beginPath();
+      ctx.arc(-20, 56, 5, 0, Math.PI * 2);
+      ctx.fill();
+      
+      ctx.beginPath();
+      ctx.arc(20, 56, 5, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.lineWidth = 10;
+      const mouthW = 32;
+      ctx.moveTo(-mouthW, 94);
+      
+      let mouthY = 102; 
+      if (this.isCrouching) mouthY = 98;
+      else if (this.vy > 5) mouthY = 106;
+      
+      ctx.quadraticCurveTo(0, mouthY, mouthW, 94);
+      ctx.stroke();
+
+      ctx.restore();
+    }
+  }
+
+  const ENEMY_TYPES = {
+    grunt: {
+      hp: 40,
+      width: 90,
+      height: 60,
+      speed: 1,
+      damage: 20,
+      attackRange: 95,
+      attackCooldown: 35,
+      bodyTop: '#3b0f1a',
+      bodyBottom: '#120409',
+      eyeColor: '#ff4d6d',
+      slashColor: '#ff5b5b',
+      ringColor: '#ff5b5b',
+      accent: '#ff9aa8',
+      style: 'grunt'
+    },
+    scout: {
+      hp: 28,
+      width: 80,
+      height: 55,
+      speed: 1.35,
+      damage: 16,
+      attackRange: 88,
+      attackCooldown: 26,
+      bodyTop: '#0f2a3b',
+      bodyBottom: '#07121a',
+      eyeColor: '#7de3ff',
+      slashColor: '#5cc8ff',
+      ringColor: '#7de3ff',
+      accent: '#bfe7ff',
+      style: 'scout'
+    },
+    brute: {
+      hp: 70,
+      width: 120,
+      height: 80,
+      speed: 0.7,
+      damage: 30,
+      attackRange: 120,
+      attackCooldown: 45,
+      bodyTop: '#3a1c48',
+      bodyBottom: '#14081d',
+      eyeColor: '#ffb067',
+      slashColor: '#ff9ad5',
+      ringColor: '#ffb067',
+      accent: '#ffd36b',
+      style: 'brute'
+    },
+    knight: {
+      hp: 120,
+      width: 140,
+      height: 95,
+      speed: 0.8,
+      damage: 36,
+      attackRange: 135,
+      attackCooldown: 55,
+      bodyTop: '#2c3548',
+      bodyBottom: '#121722',
+      eyeColor: '#a6e7ff',
+      slashColor: '#cfe3ff',
+      ringColor: '#9acbff',
+      accent: '#d8e8ff',
+      style: 'knight'
+    },
+    mage: {
+      hp: 55,
+      width: 95,
+      height: 70,
+      speed: 0.9,
+      damage: 24,
+      attackRange: 115,
+      attackCooldown: 38,
+      bodyTop: '#1a2b4d',
+      bodyBottom: '#0b1224',
+      eyeColor: '#cfa6ff',
+      slashColor: '#d9b6ff',
+      ringColor: '#9bb6ff',
+      accent: '#b78cff',
+      style: 'mage'
+    },
+    stalker: {
+      hp: 45,
+      width: 88,
+      height: 58,
+      speed: 1.6,
+      damage: 18,
+      attackRange: 92,
+      attackCooldown: 26,
+      bodyTop: '#1f3b25',
+      bodyBottom: '#0a1a10',
+      eyeColor: '#7effa5',
+      slashColor: '#a7ffcf',
+      ringColor: '#7effa5',
+      accent: '#aaffc9',
+      style: 'stalker'
+    }
+  };
+
+  let groundProfile = [];
+  let groundInfo = null;
+
+  class Enemy {
+    constructor(x, y, platform, kind = 'grunt', spawnId = null) {
+      const preset = ENEMY_TYPES[kind] || ENEMY_TYPES.grunt;
+      this.id = Enemy.nextId++;
+      this.kind = kind;
+      this.spawnId = spawnId;
+      this.x = x;
+      this.y = y;
+      this.vx = 0;
+      this.vy = 0;
+      this.width = preset.width;
+      this.height = preset.height;
+      this.hp = preset.hp;
+      this.maxHp = preset.hp;
+      this.invuln = 0;
+      this.platform = platform;
+      this.groundY = platform.y;
+      this.onGround = true;
+      this.hitstun = 0;
+      this.attackState = 'idle';
+      this.attackTimer = 0;
+      this.attackCooldownBase = preset.attackCooldown;
+      this.attackCooldown = preset.attackCooldown;
+      this.attackHit = false;
+      this.attackRange = preset.attackRange * ENEMY_ATTACK_RANGE_SCALE;
+      this.damage = preset.damage;
+      this.speedMul = preset.speed;
+      this.facing = 1;
+      this.renderRot = 0;
+      this.spawnX = x;
+      this.patrolDir = Math.random() > 0.5 ? 1 : -1;
+      this.patrolRange = 140 + Math.random() * 120;
+      this.state = 'patrol';
+      this.stateTimer = 0;
+      this.strafeDir = Math.random() > 0.5 ? 1 : -1;
+      this.deadTimer = 0;
+      this.bodyTop = preset.bodyTop;
+      this.bodyBottom = preset.bodyBottom;
+      this.eyeColor = preset.eyeColor;
+      this.slashColor = preset.slashColor;
+      this.ringColor = preset.ringColor;
+      this.style = preset.style || kind;
+      this.accent = preset.accent || preset.eyeColor || '#ffffff';
+      this.hpDisplay = this.hp;
+      this.hpLag = this.hp;
+      this.hpLagHold = 0;
+      this.lastHp = this.hp;
+    }
+
+    update(player) {
+      if (this.hp <= 0) {
+        if (this.deadTimer === 0 && this.spawnId !== null && enemySpawns[this.spawnId]) {
+          enemySpawns[this.spawnId].respawn = Math.max(enemySpawns[this.spawnId].respawn, RESPAWN_DELAY);
+        }
+        this.deadTimer++;
+        this.vy += ENEMY_GRAVITY;
+        this.y += this.vy;
+        this.vx *= 0.92;
+        this.x += this.vx;
+        return;
+      }
+      if (this.invuln > 0) this.invuln--;
+
+      const dx = player.x - this.x;
+      const dist = Math.abs(dx);
+      this.facing = dx >= 0 ? 1 : -1;
+      const sameHeight = Math.abs(player.y - this.y) < 100;
+      const groundY = (this.platform && this.platform.ground) ? groundHeightAt(this.x) : this.groundY;
+      this.groundY = groundY;
+
+      if (!this.onGround) {
+        this.vy += ENEMY_GRAVITY;
+        this.y += this.vy;
+        if (this.y >= groundY) {
+          this.y = groundY;
+          this.vy = 0;
+          this.onGround = true;
+        }
+      } else {
+        this.y = groundY;
+      }
+
+      if (this.hitstun > 0) {
+        this.hitstun--;
+        this.vx *= 0.88;
+        this.x += this.vx;
+      } else if (this.attackState !== 'idle') {
+        if (this.attackState === 'windup') {
+          this.attackTimer--;
+          this.vx *= 0.8;
+          if (this.attackTimer <= 0) {
+            this.attackState = 'attack';
+            this.attackTimer = 12;
+            this.attackHit = false;
+          effects.push({ type: 'enemySlash', x: this.x + this.facing * 30, y: this.y - this.height * 0.6, life: 12, maxLife: 12, r: 70, facing: this.facing, color: this.slashColor || '#ff5b5b', angle: -0.25, seed: Math.random() * 10 });
+            playSfx('slash');
+          }
+        } else if (this.attackState === 'attack') {
+          this.attackTimer--;
+          this.vx += this.facing * 0.9 * (this.speedMul || 1);
+          if (this.attackTimer <= 0) {
+            this.attackState = 'recover';
+            this.attackTimer = 16;
+          }
+        } else if (this.attackState === 'recover') {
+          this.attackTimer--;
+          this.vx *= 0.85;
+          if (this.attackTimer <= 0) {
+            this.attackState = 'idle';
+            this.attackCooldown = this.attackCooldownBase || 35;
+          }
+        }
+      } else {
+        if (this.attackCooldown > 0) this.attackCooldown--;
+        if (this.stateTimer > 0) this.stateTimer--;
+
+        if (playerOffenseTimer > 0 && dist < 240) {
+          if (this.state !== 'evade') {
+            this.state = 'evade';
+            this.stateTimer = 24;
+            this.strafeDir = Math.random() > 0.5 ? 1 : -1;
+          }
+        } else if (dist > 520) {
+          this.state = 'patrol';
+          this.stateTimer = 0;
+        } else if (this.stateTimer <= 0 && sameHeight && dist < 420) {
+          const roll = Math.random();
+          if (dist < 120 && roll < 0.7) {
+            this.state = 'retreat';
+            this.stateTimer = 18;
+          } else if (roll < 0.35) {
+            this.state = 'chase';
+            this.stateTimer = 28;
+          } else if (roll < 0.55) {
+            this.state = 'strafe';
+            this.stateTimer = 24;
+            this.strafeDir = Math.random() > 0.5 ? 1 : -1;
+          } else if (roll < 0.7) {
+            this.state = 'feint';
+            this.stateTimer = 18;
+          } else {
+            this.state = 'wait';
+            this.stateTimer = 16;
+          }
+        }
+
+        if (sameHeight && dist < this.attackRange && this.attackCooldown <= 0 && playerOffenseTimer <= 0 && this.state !== 'evade' && this.state !== 'retreat') {
+          this.attackState = 'windup';
+          this.attackTimer = 18;
+          effects.push({ type: 'ring', x: this.x, y: this.y - this.height * 0.5, life: 12, maxLife: 12, r: 18, color: this.ringColor || '#ff5b5b' });
+        } else {
+          if (this.state === 'chase') {
+            this.vx += Math.sign(dx) * 0.5 * (this.speedMul || 1);
+          } else if (this.state === 'strafe') {
+            this.vx += this.strafeDir * 0.4 * (this.speedMul || 1);
+            if (dist < 140) this.vx += -Math.sign(dx) * 0.25 * (this.speedMul || 1);
+          } else if (this.state === 'retreat' || this.state === 'evade') {
+            this.vx += -Math.sign(dx) * 0.55 * (this.speedMul || 1);
+          } else if (this.state === 'feint') {
+            const toward = this.stateTimer > 10 ? 1 : -1;
+            this.vx += Math.sign(dx) * 0.45 * toward * (this.speedMul || 1);
+          } else if (this.state === 'wait') {
+            this.vx *= 0.7;
+          } else {
+            const leftBound = this.spawnX - this.patrolRange;
+            const rightBound = this.spawnX + this.patrolRange;
+            if (this.x < leftBound) this.patrolDir = 1;
+            if (this.x > rightBound) this.patrolDir = -1;
+            this.vx += this.patrolDir * 0.3 * (this.speedMul || 1);
+          }
+        }
+      }
+
+      this.vx *= this.onGround ? 0.9 : 0.98;
+      this.x += this.vx;
+
+      const minX = (this.platform && this.platform.ground) ? 35 : (this.platform.x + 35);
+      const maxX = (this.platform && this.platform.ground) ? (STAGE_LENGTH - 35) : (this.platform.x + this.platform.w - 35);
+      if (this.x < minX) { this.x = minX; this.vx = Math.abs(this.vx); }
+      if (this.x > maxX) { this.x = maxX; this.vx = -Math.abs(this.vx); }
+    }
+
+    draw(ctx) {
+      if (this.hp <= 0 && this.deadTimer > 30) return;
+      const blink = this.invuln > 0 && Math.floor(this.invuln / 3) % 2 === 0;
+      ctx.save();
+      ctx.translate(this.x, this.y);
+
+      // 影
+      ctx.globalAlpha = 0.3;
+      ctx.fillStyle = '#1b1b1b';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, this.width * 0.45, this.height * 0.18, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.globalAlpha = blink ? 0.5 : 1.0;
+      ctx.translate(0, -this.height);
+
+      const rX = this.width * 0.5;
+      const rY = this.height * 0.45;
+      const bodyY = this.height;
+
+      const grad = ctx.createLinearGradient(0, bodyY - rY * 1.2, 0, bodyY + rY);
+      grad.addColorStop(0, this.bodyTop || '#3b0f1a');
+      grad.addColorStop(1, this.bodyBottom || '#120409');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.ellipse(0, bodyY - rY, rX, rY, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      const accent = this.accent || this.eyeColor || '#ffffff';
+      if (this.style === 'knight') {
+        ctx.save();
+        ctx.fillStyle = colorWithAlpha(accent, 0.9);
+        ctx.fillRect(-rX * 0.65, bodyY - rY * 1.05, rX * 1.3, rY * 0.32);
+        ctx.fillStyle = colorWithAlpha('#ffffff', 0.35);
+        ctx.fillRect(-rX * 0.4, bodyY - rY * 0.86, rX * 0.8, rY * 0.12);
+        ctx.fillStyle = colorWithAlpha(accent, 0.85);
+        ctx.beginPath();
+        ctx.moveTo(-rX * 0.6, bodyY - rY * 1.08);
+        ctx.lineTo(-rX * 0.98, bodyY - rY * 1.42);
+        ctx.lineTo(-rX * 0.38, bodyY - rY * 1.2);
+        ctx.closePath();
+        ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(rX * 0.6, bodyY - rY * 1.08);
+        ctx.lineTo(rX * 0.98, bodyY - rY * 1.42);
+        ctx.lineTo(rX * 0.38, bodyY - rY * 1.2);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      } else if (this.style === 'mage') {
+        ctx.save();
+        ctx.fillStyle = colorWithAlpha(this.bodyBottom, 0.9);
+        ctx.beginPath();
+        ctx.moveTo(-rX * 0.9, bodyY - rY * 0.2);
+        ctx.lineTo(0, bodyY + rY * 0.9);
+        ctx.lineTo(rX * 0.9, bodyY - rY * 0.2);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = colorWithAlpha(accent, 0.85);
+        ctx.beginPath();
+        ctx.arc(0, bodyY - rY * 1.05, rX * 0.18, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      } else if (this.style === 'stalker') {
+        ctx.save();
+        ctx.fillStyle = colorWithAlpha(accent, 0.85);
+        for (let i = 0; i < 4; i++) {
+          const sx = -rX * 0.7 + i * (rX * 0.45);
+          const sy = bodyY - rY * 1.15;
+          ctx.beginPath();
+          ctx.moveTo(sx, sy + 8);
+          ctx.lineTo(sx + 12, sy - 12);
+          ctx.lineTo(sx + 24, sy + 8);
+          ctx.closePath();
+          ctx.fill();
+        }
+        ctx.restore();
+      } else if (this.style === 'brute') {
+        ctx.save();
+        ctx.fillStyle = colorWithAlpha(accent, 0.8);
+        ctx.fillRect(-rX * 0.95, bodyY - rY * 0.7, rX * 0.42, rY * 0.35);
+        ctx.fillRect(rX * 0.53, bodyY - rY * 0.7, rX * 0.42, rY * 0.35);
+        ctx.restore();
+      } else if (this.style === 'scout') {
+        ctx.save();
+        ctx.strokeStyle = colorWithAlpha(accent, 0.7);
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(-rX * 0.2, bodyY - rY * 1.05);
+        ctx.lineTo(-rX * 0.35, bodyY - rY * 1.35);
+        ctx.moveTo(rX * 0.2, bodyY - rY * 1.05);
+        ctx.lineTo(rX * 0.35, bodyY - rY * 1.35);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      ctx.fillStyle = this.eyeColor || '#ff4d6d';
+      ctx.beginPath();
+      ctx.arc(-14, bodyY - rY - 8, 5, 0, Math.PI * 2);
+      ctx.arc(14, bodyY - rY - 6, 4, 0, Math.PI * 2);
+      ctx.fill();
+
+      if (this.attackState === 'windup') {
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.fillStyle = 'rgba(255, 80, 80, 0.35)';
+        ctx.beginPath();
+        ctx.ellipse(0, bodyY - rY, rX * 0.9, rY * 0.8, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      // HPバー
+      const hpRatio = Math.max(0, this.hpDisplay / this.maxHp);
+      const lagRatio = Math.max(0, this.hpLag / this.maxHp);
+      const barW = 64;
+      const barH = 6;
+      const barX = -barW / 2;
+      const barY = bodyY - rY - 26;
+      ctx.globalAlpha = 1;
+      drawKhHpBar(ctx, barX, barY, barW, barH, hpRatio, lagRatio, {
+        radius: 3,
+        pad: 1,
+        ticks: false,
+        sheen: false,
+        alpha: 0.9
+      });
+
+      ctx.restore();
+    }
+  }
+  Enemy.nextId = 1;
+
+  function createCommandDeck() {
+    return [
+      { name: 'スラッシュ', type: 'slash', cooldown: 95, timer: 0, damage: 26, radius: 135, range: 170, knockback: 12, color: '#ffd166' },
+      { name: 'ラッシュ', type: 'rush', cooldown: 140, timer: 0, damage: 14, radius: 110, range: 140, knockback: 9, color: '#5cc8ff', multi: 5 },
+      { name: 'スピン', type: 'spin', cooldown: 180, timer: 0, damage: 28, radius: 240, range: 0, knockback: 16, color: '#d8a7ff' },
+      { name: 'ファイア', type: 'fire', cooldown: 180, timer: 0, damage: 26, radius: 120, range: 720, knockback: 16, color: '#ff9a5b', count: 1, speed: 9.2, turn: 0.32, life: 130, seekRange: 900 },
+      { name: 'サンダー', type: 'thunder', cooldown: 190, timer: 0, damage: 18, radius: 150, range: 320, knockback: 12, color: '#9ad1ff', strikes: 3 },
+      { name: 'ブリザド', type: 'ice', cooldown: 170, timer: 0, damage: 16, radius: 120, range: 260, knockback: 8, color: '#b6e6ff', shards: 3 },
+      { name: 'エアロ', type: 'aero', cooldown: 190, timer: 0, damage: 26, radius: 240, range: 0, knockback: 14, color: '#8fffd0', hits: 3, lift: 14 },
+      { name: 'ヒール', type: 'heal', cooldown: 420, timer: 0, heal: 35, color: '#8cffb3' }
+    ];
+  }
+
+  let commandDeck = createCommandDeck();
+  let commandRotateFrames = 0;
+  let commandRotateDir = 1;
+  let commandRotateQueue = 0;
+  let attacks = [];
+  let effects = [];
+  let coins = [];
+  let coinCount = 0;
+  let coinPulse = 0;
+  let coinIdCounter = 1;
+  let fxBudget = 0;
+  let gimmicks = [];
+  let enemies = [];
+  let enemySpawns = [];
+  let gameOver = false;
+  let gameOverTimer = 0;
+  let deathSequence = false;
+  let deathTimer = 0;
+  let lockOnActive = false;
+  let lockOnTarget = null;
+  let softLockTarget = null;
+  let basicComboStep = 0;
+  let basicComboTimer = 0;
+  let basicChainQueued = false;
+  let basicComboCooldown = 0;
+  let playerOffenseTimer = 0;
+  let comboCount = 0;
+  let comboTimer = 0;
+  let slashComboStep = 0;
+  let slashComboTimer = 0;
+  let hpUiPulse = 0;
+  let hpUiShake = 0;
+
+  const player = new Pudding(300, 200);
+
+  function resetGame() {
+    player.reset(true);
+    initEnemies();
+    attacks = [];
+    effects = [];
+    initGimmicks();
+    initCoins();
+    coinCount = 0;
+    coinPulse = 0;
+    commandDeck = createCommandDeck();
+    commandRotateFrames = 0;
+    commandRotateDir = 1;
+    commandRotateQueue = 0;
+    gameOver = false;
+    gameOverTimer = 0;
+    deathSequence = false;
+    deathTimer = 0;
+    lockOnActive = false;
+    lockOnTarget = null;
+    softLockTarget = null;
+    basicComboStep = 0;
+    basicComboTimer = 0;
+    basicChainQueued = false;
+    basicComboCooldown = 0;
+    playerOffenseTimer = 0;
+    comboCount = 0;
+    comboTimer = 0;
+    slashComboStep = 0;
+    slashComboTimer = 0;
+    hpUiPulse = 0;
+    hpUiShake = 0;
+    bgmFadeOut = false;
+    bgmFade = 1;
+    stopGameOverBgm();
+    startBgm();
+  }
+
+  function triggerDeckRotate(dir = 1, steps = 1) {
+    const stepDir = dir >= 0 ? 1 : -1;
+    const stepCount = Math.max(1, Math.floor(steps || 1));
+    if (commandRotateFrames <= 0) {
+      commandRotateFrames = COMMAND_ROTATE_FRAMES;
+      commandRotateDir = stepDir;
+      commandRotateQueue = stepCount - 1;
+      playSfx('rotate');
+    } else {
+      commandRotateQueue += stepCount;
+      commandRotateDir = stepDir;
+    }
+  }
+
+  function updateCommandDeck() {
+    for (let cmd of commandDeck) {
+      if (cmd.timer > 0) cmd.timer--;
+    }
+    if (commandRotateFrames > 0) {
+      commandRotateFrames--;
+      if (commandRotateFrames === 0) {
+        if (commandRotateDir > 0) {
+          commandDeck.push(commandDeck.shift());
+        } else {
+          commandDeck.unshift(commandDeck.pop());
+        }
+        if (commandRotateQueue > 0) {
+          commandRotateQueue--;
+          commandRotateFrames = COMMAND_ROTATE_FRAMES;
+          playSfx('rotate');
+        }
+      }
+    } else if (commandRotateQueue > 0) {
+      commandRotateQueue--;
+      commandRotateFrames = COMMAND_ROTATE_FRAMES;
+      playSfx('rotate');
+    }
+  }
+
+  function applyHitStop(frames, flash) {
+    hitStop = Math.max(hitStop, frames);
+    screenFlash = Math.max(screenFlash, flash);
+  }
+
+  function tryGuard() {
+    if (!player.onGround) return false;
+    if (player.guardCooldown > 0 || player.guardTimer > 0) return false;
+    if (player.attackTimer > 0 || player.dodgeTimer > 0) return false;
+    player.guardTimer = GUARD_DURATION;
+    player.guardTimerMax = GUARD_DURATION;
+    player.guardCooldown = GUARD_COOLDOWN;
+    player.guardSpin = Math.random() * Math.PI * 2;
+    player.guardFlash = 6;
+    player.guardColor = resolveFxColor(FX_PALETTES.guard, '#7ee5ff');
+    player.vx *= 0.2;
+    const guardY = player.y - player.height * 0.55;
+    effects.push({ type: 'ring', x: player.x, y: guardY, life: 18, maxLife: 18, r: 100, color: player.guardColor });
+    effects.push({ type: 'impact', x: player.x, y: guardY, life: 14, maxLife: 14, r: 52, color: '#ffffff' });
+    spawnSparks(player.x, guardY, 14, [player.guardColor, '#ffffff'], Math.PI * 2, 7, 18);
+    rumble(0.25, 80, 0.18);
+    playSfx('guardStart');
+    return true;
+  }
+
+  function tryDodge(dir) {
+    if (!player.onGround) return false;
+    if (player.dodgeCooldown > 0 || player.dodgeTimer > 0) return false;
+    player.dodgeTimer = 18;
+    player.dodgeTimerMax = player.dodgeTimer;
+    player.dodgeCooldown = 45;
+    player.dodgeDir = dir;
+    player.dodgeSpeed = PLAYER_DODGE_SPEED;
+    player.dodgeColor = resolveFxColor(FX_PALETTES.dodge, '#aee7ff');
+    player.invuln = Math.max(player.invuln, 22);
+    player.vx += dir * PLAYER_DODGE_BOOST;
+    player.scaleVelX += 0.16;
+    player.scaleVelY -= 0.14;
+    const dodgeY = player.y - player.height * 0.55;
+    effects.push({ type: 'dash', x: player.x, y: dodgeY, life: 16, maxLife: 16, color: player.dodgeColor, len: 220, angle: dir === 1 ? 0 : Math.PI });
+    effects.push({ type: 'dash', x: player.x, y: dodgeY, life: 12, maxLife: 12, color: '#ffffff', len: 140, angle: dir === 1 ? 0 : Math.PI });
+    effects.push({ type: 'ring', x: player.x + dir * 10, y: dodgeY, life: 14, maxLife: 14, r: 46, color: player.dodgeColor });
+    spawnShockwave(player.x + dir * 12, dodgeY, player.dodgeColor);
+    spawnSparks(player.x, dodgeY, 16, FX_PALETTES.dodge, Math.PI, 6, 16);
+    screenShake += 2.4;
+    rumble(0.28, 90, 0.22);
+    playSfx('dodge');
+    return true;
+  }
+
+  function resolveFxColor(color, fallback) {
+    if (Array.isArray(color) && color.length > 0) {
+      return color[Math.floor(Math.random() * color.length)];
+    }
+    return color || fallback;
+  }
+
+  function colorWithAlpha(color, alpha) {
+    if (!color) return `rgba(255,255,255,${alpha})`;
+    const c = String(color).trim();
+    if (c.startsWith('#')) {
+      let hex = c.slice(1);
+      if (hex.length === 3) hex = hex.split('').map(ch => ch + ch).join('');
+      if (hex.length === 6) {
+        const num = parseInt(hex, 16);
+        const r = (num >> 16) & 255;
+        const g = (num >> 8) & 255;
+        const b = num & 255;
+        return `rgba(${r},${g},${b},${alpha})`;
+      }
+    }
+    if (c.startsWith('rgb')) {
+      const nums = c.replace(/rgba?\(|\)|\s/g, '').split(',');
+      if (nums.length >= 3) {
+        return `rgba(${nums[0]},${nums[1]},${nums[2]},${alpha})`;
+      }
+    }
+    return color;
+  }
+
+  function spawnSparks(x, y, count, color, spread = Math.PI * 2, speed = 6, life = 18) {
+    const density = getFxDensity();
+    if (density <= 0) return;
+    for (let i = 0; i < count; i++) {
+      if (density < 1 && Math.random() > density) continue;
+      if (!consumeFxBudget()) break;
+      const ang = (Math.random() - 0.5) * spread;
+      const spd = speed * (0.4 + Math.random() * 0.8);
+      const sparkColor = resolveFxColor(color, '#ffffff');
+      effects.push({
+        type: 'spark',
+        x,
+        y,
+        vx: Math.cos(ang) * spd,
+        vy: Math.sin(ang) * spd,
+        gravity: 0.12,
+        life,
+        maxLife: life,
+        color: sparkColor,
+        size: 2 + Math.random() * 3
+      });
+    }
+  }
+
+  function spawnShockwave(x, y, color) {
+    effects.push({ type: 'ring', x, y, life: 14, maxLife: 14, r: 30, color: resolveFxColor(color, '#fff1a8') });
+  }
+
+  function spawnImpact(x, y, color) {
+    effects.push({ type: 'impact', x, y, life: 12, maxLife: 12, r: 40, color: resolveFxColor(color, '#ffffff') });
+  }
+
+  function getFxDensity() {
+    const len = effects.length;
+    if (len > FX_HARD_CAP) return 0;
+    if (len > FX_SOFT_CAP) return 0.4;
+    if (len > FX_WARN_CAP) return 0.7;
+    return 1;
+  }
+
+  function consumeFxBudget() {
+    if (effects.length >= FX_HARD_CAP) return false;
+    if (fxBudget <= 0) return false;
+    fxBudget--;
+    return true;
+  }
+
+  function createCoin(x, y, options = {}) {
+    return {
+      id: coinIdCounter++,
+      x,
+      y,
+      baseY: options.baseY !== undefined ? options.baseY : y,
+      r: options.r !== undefined ? options.r : 30,
+      vx: options.vx || 0,
+      vy: options.vy || 0,
+      spin: options.spin !== undefined ? options.spin : Math.random() * Math.PI * 2,
+      spinSpeed: options.spinSpeed !== undefined ? options.spinSpeed : (0.05 + Math.random() * 0.06),
+      bobPhase: options.bobPhase !== undefined ? options.bobPhase : Math.random() * Math.PI * 2,
+      float: options.float || false,
+      dynamic: options.dynamic || false,
+      bounce: options.bounce !== undefined ? options.bounce : COIN_BOUNCE,
+      value: options.value !== undefined ? options.value : 1,
+      restTimer: 0,
+      renderY: y,
+      collected: false
+    };
+  }
+
+  function spawnCoin(x, y, options = {}) {
+    coins.push(createCoin(x, y, options));
+  }
+
+  function spawnCoinBurst(x, y, enemy = null) {
+    const hp = enemy && enemy.maxHp ? enemy.maxHp : 60;
+    const base = Math.round(hp / 30);
+    const count = Math.max(COIN_DROP_MIN, Math.min(COIN_DROP_MAX, base + Math.floor(Math.random() * 3)));
+    for (let i = 0; i < count; i++) {
+      const ang = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI * 0.9;
+      const speed = 2.8 + Math.random() * 4.2;
+      const vx = Math.cos(ang) * speed * (0.7 + Math.random() * 0.6);
+      const vy = Math.sin(ang) * speed - (1 + Math.random() * 1.2);
+      spawnCoin(x + (Math.random() - 0.5) * 24, y + (Math.random() - 0.5) * 18, {
+        dynamic: true,
+        float: false,
+        vx,
+        vy,
+        r: 26 + Math.random() * 8,
+        spinSpeed: 0.08 + Math.random() * 0.08
+      });
+    }
+  }
+
+  function initCoins() {
+    coins = [];
+    coinIdCounter = 1;
+    const ground = groundInfo;
+    if (ground) {
+      const spacing = 420;
+      for (let x = ground.x + 260; x < ground.x + ground.w - 260; x += spacing) {
+        const jitter = (Math.random() - 0.5) * 140;
+        const gx = x + jitter;
+        const groundYAt = groundHeightAt(gx);
+        if (Math.random() < 0.85) {
+          const cy = groundYAt - 72 - Math.random() * 12;
+          spawnCoin(gx, cy, { float: true, baseY: cy });
+        }
+        if (Math.random() < 0.3) {
+          const arcCount = 2 + Math.floor(Math.random() * 2);
+          for (let i = 0; i < arcCount; i++) {
+            const offset = (i - (arcCount - 1) / 2) * 34;
+            const arcY = groundYAt - 112 - Math.sin((i / Math.max(1, arcCount - 1)) * Math.PI) * 16;
+            spawnCoin(gx + offset, arcY, { float: true, baseY: arcY, r: 26 });
+          }
+        }
+      }
+    }
+    const ledges = platforms.filter(p => !p.ground && !p.ramp && p.w >= 180);
+    for (let p of ledges) {
+      const count = Math.random() < 0.6 ? 2 : 1;
+      for (let i = 0; i < count; i++) {
+        const t = count === 1 ? 0.5 : (0.3 + i * 0.4);
+        const cx = p.x + p.w * t + (Math.random() - 0.5) * 18;
+        const cy = p.y - 58 - Math.random() * 14;
+        spawnCoin(cx, cy, { float: true, baseY: cy, r: 28 + Math.random() * 4 });
+      }
+    }
+  }
+
+  function collectCoin(coin) {
+    if (!coin || coin.collected) return;
+    coin.collected = true;
+    coinCount += coin.value || 1;
+    coinPulse = Math.min(1.2, coinPulse + 0.35);
+    playSfx('coin');
+    const cy = coin.renderY !== undefined ? coin.renderY : coin.y;
+    effects.push({ type: 'ring', x: coin.x, y: cy, life: 14, maxLife: 14, r: 30, color: '#ffe7a6' });
+    spawnSparks(coin.x, cy, 10, COIN_PALETTE, Math.PI * 2, 5, 16);
+  }
+
+  function updateCoins() {
+    const px = player.x;
+    const py = player.y - player.height * 0.55;
+    for (let coin of coins) {
+      if (coin.collected) continue;
+      if (coin.dynamic) {
+        const prevY = coin.y;
+        coin.vy += COIN_GRAVITY;
+        coin.x += coin.vx;
+        coin.y += coin.vy;
+        coin.vx *= COIN_AIR_DRAG;
+
+        let grounded = false;
+        for (let p of platforms) {
+          if (p.ground) continue;
+          if (coin.x + coin.r < p.x || coin.x - coin.r > p.x + p.w) continue;
+          const topY = p.y;
+          if (prevY <= topY - coin.r && coin.y >= topY - coin.r) {
+            coin.y = topY - coin.r;
+            if (Math.abs(coin.vy) > 1.1) {
+              coin.vy = -coin.vy * coin.bounce;
+              coin.vx *= 0.92;
+            } else {
+              coin.vy = 0;
+              grounded = true;
+            }
+            break;
+          }
+        }
+        if (!grounded) {
+          const groundYAt = groundHeightAt(coin.x);
+          if (prevY <= groundYAt - coin.r && coin.y >= groundYAt - coin.r) {
+            coin.y = groundYAt - coin.r;
+            if (Math.abs(coin.vy) > 1.1) {
+              coin.vy = -coin.vy * coin.bounce;
+              coin.vx *= 0.92;
+            } else {
+              coin.vy = 0;
+              grounded = true;
+            }
+          }
+        }
+        if (grounded) {
+          coin.vx *= COIN_GROUND_DRAG;
+          if (Math.abs(coin.vx) < 0.05) coin.vx = 0;
+          coin.restTimer++;
+          if (coin.restTimer > 24) {
+            coin.dynamic = false;
+            coin.float = true;
+            coin.baseY = coin.y;
+            coin.vx = 0;
+            coin.vy = 0;
+          }
+        } else {
+          coin.restTimer = 0;
+        }
+      }
+
+      const bob = coin.float ? Math.sin(stageTime * COIN_FLOAT_SPEED + coin.bobPhase) * COIN_FLOAT_AMPLITUDE : 0;
+      coin.renderY = (coin.float ? coin.baseY : coin.y) + bob;
+      coin.spin += coin.spinSpeed;
+
+      const dxp = coin.x - px;
+      const dyp = coin.renderY - py;
+      if (Math.hypot(dxp, dyp) <= COIN_COLLECT_RADIUS) {
+        collectCoin(coin);
+        continue;
+      }
+      for (let atk of attacks) {
+        if (atk.delay && atk.delay > 0) continue;
+        const dx = coin.x - atk.x;
+        const dy = coin.renderY - atk.y;
+        if (Math.hypot(dx, dy) <= atk.r + coin.r) {
+          collectCoin(coin);
+          break;
+        }
+      }
+    }
+    coins = coins.filter(c => !c.collected);
+  }
+
+  function updateHpDisplay(entity, fast = 0.24, slow = 0.06, hold = 10) {
+    if (entity.hpDisplay === undefined) {
+      entity.hpDisplay = entity.hp;
+      entity.hpLag = entity.hp;
+      entity.hpLagHold = 0;
+      entity.lastHp = entity.hp;
+      return;
+    }
+    const hp = entity.hp;
+    if (hp < entity.lastHp) {
+      entity.hpLagHold = hold;
+    }
+    entity.lastHp = hp;
+    entity.hpDisplay += (hp - entity.hpDisplay) * fast;
+    if (entity.hpLag > hp) {
+      if (entity.hpLagHold > 0) entity.hpLagHold--;
+      else entity.hpLag += (hp - entity.hpLag) * slow;
+    } else {
+      entity.hpLag += (hp - entity.hpLag) * fast;
+    }
+    entity.hpDisplay = Math.max(0, Math.min(entity.maxHp, entity.hpDisplay));
+    entity.hpLag = Math.max(0, Math.min(entity.maxHp, entity.hpLag));
+  }
+
+  function drawRoundedRect(ctx, x, y, w, h, r) {
+    const radius = Math.min(r, h / 2, w / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + radius, y);
+    ctx.lineTo(x + w - radius, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
+    ctx.lineTo(x + w, y + h - radius);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
+    ctx.lineTo(x + radius, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
+    ctx.lineTo(x, y + radius);
+    ctx.quadraticCurveTo(x, y, x + radius, y);
+    ctx.closePath();
+  }
+
+  function drawKhHpBar(ctx, x, y, w, h, ratio, lagRatio, opts = {}) {
+    const radius = opts.radius ?? Math.max(2.5, h * 0.5);
+    const pad = opts.pad ?? Math.max(1, Math.floor(h * 0.22));
+    const innerX = x + pad;
+    const innerY = y + pad;
+    const innerW = w - pad * 2;
+    const innerH = h - pad * 2;
+    if (innerW <= 1 || innerH <= 1) return;
+    const innerR = Math.max(1, radius - pad);
+
+    ctx.save();
+    if (opts.alpha !== undefined) ctx.globalAlpha *= opts.alpha;
+
+    // Outer shell
+    const shellGrad = ctx.createLinearGradient(0, y, 0, y + h);
+    shellGrad.addColorStop(0, HP_BAR_COLORS.shellTop);
+    shellGrad.addColorStop(0.6, HP_BAR_COLORS.shellMid);
+    shellGrad.addColorStop(1, HP_BAR_COLORS.shellBottom);
+    ctx.fillStyle = shellGrad;
+    drawRoundedRect(ctx, x, y, w, h, radius);
+    ctx.fill();
+
+    // Outline
+    ctx.strokeStyle = HP_BAR_COLORS.border;
+    ctx.lineWidth = 2;
+    drawRoundedRect(ctx, x + 1, y + 1, w - 2, h - 2, Math.max(1, radius - 1));
+    ctx.stroke();
+
+    // Track
+    const trackGrad = ctx.createLinearGradient(0, innerY, 0, innerY + innerH);
+    trackGrad.addColorStop(0, HP_BAR_COLORS.trackTop);
+    trackGrad.addColorStop(1, HP_BAR_COLORS.trackBottom);
+    ctx.fillStyle = trackGrad;
+    drawRoundedRect(ctx, innerX, innerY, innerW, innerH, innerR);
+    ctx.fill();
+
+    const lagW = Math.max(0, Math.min(innerW, innerW * lagRatio));
+    if (lagW > 0.25) {
+      const lagGrad = ctx.createLinearGradient(0, innerY, 0, innerY + innerH);
+      lagGrad.addColorStop(0, HP_BAR_COLORS.damageTop);
+      lagGrad.addColorStop(1, HP_BAR_COLORS.damageBottom);
+      ctx.save();
+      ctx.globalCompositeOperation = 'screen';
+      ctx.shadowColor = HP_BAR_COLORS.damageGlow;
+      ctx.shadowBlur = 10;
+      ctx.fillStyle = lagGrad;
+      drawRoundedRect(ctx, innerX, innerY, lagW, innerH, innerR);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    const hpW = Math.max(0, Math.min(innerW, innerW * ratio));
+    if (hpW > 0.25) {
+      const hpGrad = ctx.createLinearGradient(0, innerY, 0, innerY + innerH);
+      hpGrad.addColorStop(0, HP_BAR_COLORS.fillTop);
+      hpGrad.addColorStop(1, HP_BAR_COLORS.fillBottom);
+      ctx.save();
+      ctx.shadowColor = HP_BAR_COLORS.fillGlow;
+      ctx.shadowBlur = 8;
+      ctx.fillStyle = hpGrad;
+      drawRoundedRect(ctx, innerX, innerY, hpW, innerH, innerR);
+      ctx.fill();
+      ctx.restore();
+
+      if (opts.sheen !== false && innerH >= 5) {
+        ctx.save();
+        ctx.globalAlpha *= 0.45;
+        const sheenGrad = ctx.createLinearGradient(innerX, innerY, innerX + innerW, innerY + innerH);
+        sheenGrad.addColorStop(0, 'rgba(255,255,255,0.55)');
+        sheenGrad.addColorStop(0.35, 'rgba(255,255,255,0.0)');
+        ctx.fillStyle = sheenGrad;
+        ctx.fillRect(innerX + 1, innerY + 1, Math.max(0, hpW - 2), Math.max(1, innerH * 0.5));
+        ctx.restore();
+      }
+    }
+
+    if (opts.ticks !== false && innerW > 40) {
+      ctx.save();
+      drawRoundedRect(ctx, innerX, innerY, innerW, innerH, innerR);
+      ctx.clip();
+      ctx.globalCompositeOperation = 'screen';
+      ctx.globalAlpha *= 0.65;
+      ctx.strokeStyle = HP_BAR_COLORS.tick;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      const segments = opts.segments || 12;
+      const step = innerW / segments;
+      for (let i = 1; i < segments; i++) {
+        const tx = innerX + step * i;
+        ctx.moveTo(tx, innerY + 0.5);
+        ctx.lineTo(tx, innerY + innerH - 0.5);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    ctx.restore();
+  }
+
+  function spawnAttack(cmd) {
+    basicChainQueued = false;
+    if (basicComboStep > 0) {
+      basicComboTimer = Math.max(basicComboTimer, 30);
+    }
+    const lockTarget = lockOnActive ? lockOnTarget : softLockTarget;
+    const facing = lockTarget ? (lockTarget.x >= player.x ? 1 : -1) : (player.facing || 1);
+    player.facing = facing;
+    const baseY = player.y - player.height * 0.55;
+    let comboStep = 1;
+    if (cmd.type === 'slash') {
+      if (slashComboTimer > 0) slashComboStep = (slashComboStep % 3) + 1;
+      else slashComboStep = 1;
+      slashComboTimer = 24;
+      comboStep = slashComboStep;
+    } else {
+      slashComboTimer = 0;
+      slashComboStep = 0;
+    }
+    if (cmd.type === 'heal') {
+      player.attackTimer = 18;
+      player.attackTimerMax = player.attackTimer;
+      player.attackType = 'heal';
+      player.attackDash = 0;
+      player.attackComboStep = 0;
+      player.hp = Math.min(player.maxHp, player.hp + cmd.heal);
+      const healPalette = FX_PALETTES.heal;
+      const healColor = resolveFxColor(healPalette, '#9cffb0');
+      const healAccent = resolveFxColor(healPalette, healColor);
+      effects.push({ type: 'heal', x: player.x, y: baseY, life: 28, maxLife: 28, r: 110, color: healColor });
+      spawnSparks(player.x, baseY, 14, healPalette, Math.PI * 2, 4, 22);
+      spawnShockwave(player.x, baseY, healAccent);
+      effects.push({ type: 'pillar', x: player.x, y: baseY, life: 24, maxLife: 24, color: healColor, height: 160 });
+      screenFlash = Math.max(screenFlash, 0.2);
+      rumble(0.22, 90, 0.18);
+      playSfx('heal');
+      return;
+    }
+
+    if (cmd.type === 'fire') {
+      player.attackTimer = 20;
+      player.attackTimerMax = player.attackTimer;
+      player.attackType = 'magic';
+      player.attackDash = 0;
+      player.attackComboStep = 0;
+      playerOffenseTimer = Math.max(playerOffenseTimer, 18);
+      const firePalette = FX_PALETTES.fire;
+      const seekRange = cmd.seekRange || cmd.range || 520;
+      const target = lockTarget || findNearestEnemy(seekRange, true);
+      const count = cmd.count || 1;
+      const baseAngle = target
+        ? Math.atan2((target.y - target.height * 0.6) - baseY, (target.x - player.x))
+        : (facing === 1 ? 0 : Math.PI);
+      for (let i = 0; i < count; i++) {
+        const spread = count > 1 ? (i - (count - 1) / 2) * 0.18 : 0;
+        const ang = baseAngle + spread;
+        const speed = cmd.speed || 7;
+        const boltColor = resolveFxColor(firePalette, '#ffb067');
+        const boltAccent = resolveFxColor(firePalette, boltColor);
+        attacks.push({
+          type: 'projectile',
+          visual: 'fire',
+          x: player.x + facing * 50,
+          y: baseY - 16,
+          vx: Math.cos(ang) * speed,
+          vy: Math.sin(ang) * speed,
+          speed,
+          turn: cmd.turn || 0.16,
+          seekRange,
+          target,
+          r: cmd.radius,
+          damage: cmd.damage,
+          frames: cmd.life || 60,
+          maxFrames: cmd.life || 60,
+          knockback: cmd.knockback,
+          hitStop: 2,
+          hitstun: 12,
+          hitIds: new Set(),
+          color: boltColor,
+          accent: boltAccent
+        });
+      }
+      const fireColor = resolveFxColor(firePalette, '#ffb067');
+      const fireAccent = resolveFxColor(firePalette, fireColor);
+      effects.push({ type: 'fireburst', x: player.x + facing * 36, y: baseY - 6, life: 20, maxLife: 20, r: cmd.radius * 1.6, color: fireColor, accent: fireAccent });
+      effects.push({ type: 'ring', x: player.x + facing * 28, y: baseY, life: 18, maxLife: 18, r: cmd.radius * 1.2, color: fireAccent });
+      effects.push({ type: 'ring', x: player.x + facing * 28, y: baseY, life: 14, maxLife: 14, r: cmd.radius * 0.8, color: fireColor });
+      spawnShockwave(player.x + facing * 18, baseY, fireAccent);
+      spawnShockwave(player.x + facing * 26, baseY - 6, fireColor);
+      spawnSparks(player.x + facing * 44, baseY - 12, 26, firePalette, Math.PI * 2, 7, 24);
+      screenShake += 3.4;
+      screenFlash = Math.max(screenFlash, 0.32);
+      rumble(0.6, 140, 0.4);
+      playSfx('fire');
+      return;
+    }
+
+    if (cmd.type === 'thunder') {
+      player.attackTimer = 22;
+      player.attackTimerMax = player.attackTimer;
+      player.attackType = 'magic';
+      player.attackDash = 0;
+      player.attackComboStep = 0;
+      playerOffenseTimer = Math.max(playerOffenseTimer, 20);
+      const thunderPalette = FX_PALETTES.thunder;
+      const target = lockTarget || findNearestEnemy(cmd.range || 320, true);
+      const centerX = target ? target.x : (player.x + facing * (cmd.range * 0.6));
+      const centerY = baseY;
+      const strikes = cmd.strikes || 3;
+      const spacing = 70;
+      for (let i = 0; i < strikes; i++) {
+        const offset = (i - (strikes - 1) / 2) * spacing;
+        const sx = centerX + offset;
+        const strikeColor = resolveFxColor(thunderPalette, '#bfe7ff');
+        const strikeAccent = resolveFxColor(thunderPalette, strikeColor);
+        attacks.push({
+          x: sx,
+          y: centerY,
+          r: cmd.radius,
+          damage: cmd.damage,
+          frames: 10,
+          knockback: cmd.knockback,
+          launch: 10,
+          hitStop: 3,
+          hitstun: 18,
+          finisher: i === strikes - 1,
+          hitIds: new Set()
+        });
+        effects.push({ type: 'thunder', x: sx, y: centerY, life: 14, maxLife: 14, color: strikeColor, accent: strikeAccent, height: 220, seed: Math.random() * 10 });
+        effects.push({ type: 'ring', x: sx, y: centerY, life: 12, maxLife: 12, r: 70, color: strikeAccent });
+        spawnSparks(sx, centerY - 8, 10, thunderPalette, Math.PI * 2, 5, 16);
+      }
+      screenShake += 3.5;
+      screenFlash = Math.max(screenFlash, 0.32);
+      rumble(0.65, 150, 0.45);
+      playSfx('thunder');
+      return;
+    }
+
+    if (cmd.type === 'ice') {
+      player.attackTimer = 20;
+      player.attackTimerMax = player.attackTimer;
+      player.attackType = 'magic';
+      player.attackDash = 0;
+      player.attackComboStep = 0;
+      playerOffenseTimer = Math.max(playerOffenseTimer, 18);
+      const icePalette = FX_PALETTES.ice;
+      const shards = cmd.shards || 3;
+      for (let i = 0; i < shards; i++) {
+        const dist = 90 + i * 70;
+        const sx = player.x + facing * dist;
+        const sy = baseY - 6 - i * 6;
+        const shardColor = resolveFxColor(icePalette, '#bfefff');
+        const shardAccent = resolveFxColor(icePalette, shardColor);
+        attacks.push({
+          x: sx,
+          y: sy,
+          r: cmd.radius - i * 8,
+          damage: cmd.damage,
+          frames: 10,
+          knockback: cmd.knockback,
+          launch: 0,
+          hitStop: 2,
+          hitstun: 20,
+          finisher: i === shards - 1,
+          hitIds: new Set()
+        });
+        effects.push({ type: 'ice', x: sx, y: sy, life: 16, maxLife: 16, color: shardColor, accent: shardAccent, spread: 1.0 });
+        spawnSparks(sx, sy - 6, 8, icePalette, Math.PI * 2, 4, 14);
+      }
+      screenFlash = Math.max(screenFlash, 0.2);
+      rumble(0.45, 120, 0.3);
+      playSfx('ice');
+      return;
+    }
+
+    if (cmd.type === 'aero') {
+      player.attackTimer = 22;
+      player.attackTimerMax = player.attackTimer;
+      player.attackType = 'magic';
+      player.attackDash = 0;
+      player.attackComboStep = 0;
+      playerOffenseTimer = Math.max(playerOffenseTimer, 20);
+      const aeroPalette = FX_PALETTES.aero;
+      const aeroColor = resolveFxColor(aeroPalette, '#8fffd0');
+      const aeroAccent = resolveFxColor(aeroPalette, aeroColor);
+      const hits = cmd.hits || 3;
+      for (let i = 0; i < hits; i++) {
+        attacks.push({
+          x: player.x,
+          y: baseY,
+          r: cmd.radius * (0.9 + i * 0.08),
+          damage: cmd.damage,
+          frames: 12,
+          delay: i * 8,
+          knockback: cmd.knockback,
+          launch: cmd.lift ? (cmd.lift + i * 2) : (12 + i * 2),
+          hitStop: 2,
+          hitstun: 20,
+          finisher: i === hits - 1,
+          hitIds: new Set()
+        });
+      }
+      effects.push({ type: 'aero', x: player.x, y: baseY, life: 26, maxLife: 26, r: cmd.radius * 1.25, color: aeroColor, accent: aeroAccent, spin: 0.22 });
+      effects.push({ type: 'ring', x: player.x, y: baseY, life: 16, maxLife: 16, r: cmd.radius * 0.7, color: aeroAccent });
+      spawnShockwave(player.x, baseY, aeroAccent);
+      spawnSparks(player.x, baseY - 6, 22, aeroPalette, Math.PI * 2, 6.5, 18);
+      screenShake += 3;
+      screenFlash = Math.max(screenFlash, 0.24);
+      rumble(0.52, 130, 0.35);
+      playSfx('aero');
+      return;
+    }
+
+    if (cmd.type === 'rush') {
+      player.attackTimer = 20;
+      player.attackTimerMax = player.attackTimer;
+      player.attackType = 'rush';
+      player.attackDash = facing * 4.2;
+      player.attackComboStep = 0;
+      playerOffenseTimer = Math.max(playerOffenseTimer, 16);
+      const rushPalette = FX_PALETTES.rush;
+      const rushColor = resolveFxColor(rushPalette, '#77d9ff');
+      const rushAccent = resolveFxColor(rushPalette, rushColor);
+      const hits = cmd.multi || 4;
+      for (let i = 0; i < hits; i++) {
+        attacks.push({
+          x: player.x + facing * (cmd.range + i * 12),
+          y: baseY - i * 6,
+          r: cmd.radius,
+          damage: cmd.damage,
+          frames: 10 + i * 2,
+          knockback: i === hits - 1 ? cmd.knockback + 8 : cmd.knockback,
+          launch: i === hits - 1 ? 10 : 0,
+          hitStop: i === hits - 1 ? 3 : 1,
+          hitstun: i === hits - 1 ? 18 : 12,
+          finisher: i === hits - 1,
+          hitIds: new Set()
+        });
+      }
+      effects.push({ type: 'slash', x: player.x + facing * 90, y: baseY, life: 18, maxLife: 18, r: 140, facing, color: rushColor, accent: rushAccent, angle: -0.32, stretch: 1.3, seed: Math.random() * 10, delay: 2 });
+      spawnSparks(player.x + facing * 100, baseY - 10, 14, rushPalette, Math.PI, 7, 18);
+      spawnShockwave(player.x + facing * 80, baseY, rushAccent);
+      effects.push({ type: 'dash', x: player.x, y: baseY, life: 16, maxLife: 16, color: rushColor, len: 190, angle: facing === 1 ? 0 : Math.PI });
+      player.vx += facing * 1.5;
+      screenShake += 2.6;
+      screenFlash = Math.max(screenFlash, 0.22);
+      rumble(0.42, 110, 0.3);
+      playSfx('rush');
+      return;
+    }
+
+    if (cmd.type === 'spin') {
+      player.attackTimer = 28;
+      player.attackTimerMax = player.attackTimer;
+      player.attackType = 'spin';
+      player.attackDash = 0;
+      player.attackComboStep = 0;
+      playerOffenseTimer = Math.max(playerOffenseTimer, 22);
+      const spinPalette = FX_PALETTES.spin;
+      const spinColor = resolveFxColor(spinPalette, '#e2a6ff');
+      const spinAccent = resolveFxColor(spinPalette, spinColor);
+      attacks.push({
+        x: player.x,
+        y: baseY,
+        r: cmd.radius,
+        damage: cmd.damage,
+        frames: 14,
+        knockback: cmd.knockback,
+        launch: 8,
+        hitStop: 3,
+        hitstun: 16,
+        finisher: true,
+        hitIds: new Set()
+      });
+      attacks.push({
+        x: player.x,
+        y: baseY,
+        r: cmd.radius * 0.9,
+        damage: Math.floor(cmd.damage * 0.7),
+        frames: 12,
+        delay: 8,
+        knockback: cmd.knockback,
+        launch: 6,
+        hitStop: 2,
+        hitstun: 14,
+        finisher: true,
+        hitIds: new Set()
+      });
+      effects.push({ type: 'spin', x: player.x, y: baseY, life: 24, maxLife: 24, r: cmd.radius, color: spinColor, accent: spinAccent, spin: 0.2, blades: 5 });
+      effects.push({ type: 'ring', x: player.x, y: baseY, life: 16, maxLife: 16, r: cmd.radius * 0.55, color: spinAccent });
+      spawnShockwave(player.x, baseY, spinAccent);
+      spawnSparks(player.x, baseY, 26, spinPalette, Math.PI * 2, 8, 22);
+      screenShake += 4.2;
+      screenFlash = Math.max(screenFlash, 0.32);
+      rumble(0.58, 150, 0.4);
+      playSfx('spin');
+      return;
+    }
+
+    let dmg = cmd.damage;
+    let radius = cmd.radius;
+    let range = cmd.range;
+    let knock = cmd.knockback;
+    let launch = 0;
+    let hitStopPower = 2;
+    let hitstun = 12;
+    if (comboStep === 2) {
+      dmg += 4;
+      radius += 20;
+      knock += 3;
+      hitStopPower = 3;
+      hitstun = 14;
+    } else if (comboStep === 3) {
+      dmg += 8;
+      radius += 30;
+      range += 20;
+      knock += 6;
+      launch = 12;
+      hitStopPower = 4;
+      hitstun = 18;
+    }
+
+    player.attackTimer = 14 + comboStep * 2;
+    player.attackTimerMax = player.attackTimer;
+    player.attackType = 'slash';
+    player.attackDash = facing * (2.4 + comboStep * 0.6);
+    player.attackComboStep = comboStep;
+    playerOffenseTimer = Math.max(playerOffenseTimer, 12 + comboStep * 2);
+    const slashPalette = cmd.color ? [cmd.color, ...FX_PALETTES.slash] : FX_PALETTES.slash;
+    const slashColor = resolveFxColor(slashPalette, cmd.color || '#ffc46b');
+    const slashAccent = resolveFxColor(slashPalette, slashColor);
+    attacks.push({
+      x: player.x + facing * range,
+      y: baseY,
+      r: radius,
+      damage: dmg,
+      frames: 12,
+      knockback: knock,
+      launch,
+      hitStop: hitStopPower,
+      hitstun,
+      finisher: comboStep === 3,
+      hitIds: new Set()
+    });
+    effects.push({ type: 'slash', x: player.x + facing * range, y: baseY, life: 14 + comboStep * 2, maxLife: 14 + comboStep * 2, r: radius * 1.15, facing, color: slashColor, accent: slashAccent, angle: -0.55 + comboStep * 0.12, stretch: 1 + comboStep * 0.08, seed: Math.random() * 10, delay: 3 });
+    spawnSparks(player.x + facing * (range + 20), baseY - 8, 10 + comboStep * 3, slashPalette, Math.PI * 0.9, 6, 14);
+    spawnShockwave(player.x + facing * (range * 0.6), baseY, slashAccent);
+    if (comboStep === 3) {
+      effects.push({ type: 'ring', x: player.x + facing * range, y: baseY, life: 16, maxLife: 16, r: 60, color: resolveFxColor(FX_PALETTES.shock, '#fff1a8') });
+      screenFlash = Math.max(screenFlash, 0.25);
+    }
+    screenShake += 1.5;
+    screenFlash = Math.max(screenFlash, 0.15);
+    rumble(comboStep === 3 ? 0.42 : 0.28, comboStep === 3 ? 110 : 70);
+    playSfx('slash');
+  }
+
+  function getBasicSwingRange(stepValue) {
+    if (stepValue === 1) return { start: -2.4, end: 0.65 };    // 上から大きく
+    if (stepValue === 2) return { start: -0.2, end: 1.25 };    // 横振り
+    if (stepValue === 3) return { start: 1.7, end: -0.4 };     // 下から上へ
+    return { start: -2.9, end: 0.9 };                          // フィニッシュ：大きく振り下ろし
+  }
+
+  function getBasicSwordLocal(pud, stepValue) {
+    const topW = 96;
+    const botW = 180;
+    const h = 136;
+    const rightArmBaseX = topW / 2 + ((botW / 2 - topW / 2) * 0.55);
+    const rightArmBaseY = h * 0.55;
+    const handOffsetX = stepValue === 2 ? 6 : stepValue === 3 ? 2 : stepValue === 4 ? -2 : 4;
+    const handOffsetY = stepValue === 1 ? -6 : stepValue === 2 ? 6 : stepValue === 3 ? -10 : -16;
+    const handX = rightArmBaseX + 34 + handOffsetX;
+    const handY = rightArmBaseY - 30 - pud.rightArmOffset + handOffsetY;
+    const bladeLen = stepValue === 4 ? 132 : 112;
+    const bladeW = stepValue === 4 ? 22 : 18;
+    const { start, end } = getBasicSwingRange(stepValue);
+    return { handX, handY, bladeLen, bladeW, start, end, h };
+  }
+
+  function getBasicSwing(stepValue, prog) {
+    const { start, end } = getBasicSwingRange(stepValue);
+    const ease = 1 - Math.pow(1 - Math.min(1, Math.max(0, prog)), 3);
+    return start + (end - start) * ease;
+  }
+
+  function getBasicSwordTipWorld(stepValue, swing, facingOverride) {
+    const sword = getBasicSwordLocal(player, stepValue);
+    const tipX = sword.handX + Math.cos(swing) * sword.bladeLen;
+    const tipY = sword.handY + Math.sin(swing) * sword.bladeLen;
+
+    const face = facingOverride !== undefined ? facingOverride : (player.facing < 0 ? -1 : 1);
+    const hurtRatio = (!deathSequence && player.hurtTimer > 0) ? player.hurtTimer / 18 : 0;
+    const hurtRot = hurtRatio * -0.35 * player.hurtDir;
+    let lx = tipX;
+    let ly = tipY - player.height;
+    const skew = -player.skewC * face;
+    lx = lx + ly * skew;
+    const rot = player.renderRot + hurtRot;
+    const cos = Math.cos(rot);
+    const sin = Math.sin(rot);
+    const rx = lx * cos - ly * sin;
+    const ry = lx * sin + ly * cos;
+    return {
+      x: player.x + rx * face * player.scaleX,
+      y: player.y + ry * player.scaleY
+    };
+  }
+
+  function getBasicSwordTipCurrent(stepValue, facingOverride) {
+    const maxT = player.attackTimerMax || 1;
+    const prog = 1 - player.attackTimer / maxT;
+    const swing = getBasicSwing(stepValue, prog);
+    return getBasicSwordTipWorld(stepValue, swing, facingOverride);
+  }
+
+  function spawnBasicAttack() {
+    const lockTarget = lockOnActive ? lockOnTarget : softLockTarget;
+    const facing = lockTarget ? (lockTarget.x >= player.x ? 1 : -1) : (player.facing || 1);
+    player.facing = facing;
+    const baseY = player.y - player.height * 0.55;
+    let step = 1;
+    if (basicComboTimer > 0 && basicComboStep > 0) {
+      step = Math.min(BASIC_COMBO_MAX, basicComboStep + 1);
+    }
+    basicComboStep = step;
+
+    const dmg = step === 1 ? 6 : step === 2 ? 7 : step === 3 ? 8 : 12;
+    const radius = step === 1 ? 72 : step === 2 ? 82 : step === 3 ? 92 : 112;
+    const range = step === 1 ? 80 : step === 2 ? 95 : step === 3 ? 110 : 130;
+    const knock = step === 1 ? 4 : step === 2 ? 5 : step === 3 ? 6 : 12;
+    const launch = 0;
+    const hitStopPower = step === 4 ? 3 : 2;
+    const hitstun = step === 4 ? 18 : 12;
+
+    player.attackTimer = step === BASIC_COMBO_MAX ? 22 : (10 + step * 2);
+    player.attackTimerMax = player.attackTimer;
+    player.attackType = 'basic';
+    player.attackDash = facing * (step === BASIC_COMBO_MAX ? 0.6 : (1.1 + step * 0.35));
+    player.attackComboStep = step;
+    playerOffenseTimer = Math.max(playerOffenseTimer, 10 + step * 2);
+    player.slamActive = step === BASIC_COMBO_MAX;
+    if (step === BASIC_COMBO_MAX && player.onGround) {
+      player.vy = JUMP_FORCE * 0.75;
+      player.onGround = false;
+      player.scaleVelX -= 0.2;
+      player.scaleVelY += 0.26;
+    }
+
+    const tip = getBasicSwordTipCurrent(step, facing);
+    const attackX = player.x + facing * range;
+    const attackY = baseY;
+
+    attacks.push({
+      x: attackX,
+      y: attackY,
+      r: radius,
+      damage: dmg,
+      frames: 10,
+      knockback: knock,
+      launch,
+      hitStop: hitStopPower,
+      hitstun,
+      finisher: step === BASIC_COMBO_MAX,
+      hitIds: new Set()
+    });
+
+    const slashPalette = step === BASIC_COMBO_MAX ? FX_PALETTES.shock : FX_PALETTES.slash;
+    const stepColor = resolveFxColor(slashPalette, step === BASIC_COMBO_MAX ? '#fff2a6' : '#aee7ff');
+    const stepAccent = resolveFxColor(slashPalette, stepColor);
+    effects.push({ type: 'basicSlash', life: 12 + step * 2, maxLife: 12 + step * 2, r: radius, facing, color: stepColor, accent: stepAccent, edge: '#ffffff', seed: Math.random() * 10, delay: 1, step });
+    spawnSparks(tip.x + facing * 8, tip.y - 2, 6 + step * 2, slashPalette, Math.PI * 0.8, 4.5, 12);
+    spawnShockwave(attackX - facing * 20, baseY, stepAccent);
+    if (step === BASIC_COMBO_MAX) {
+      effects.push({ type: 'ring', x: tip.x, y: tip.y, life: 16, maxLife: 16, r: 65, color: stepAccent });
+      screenFlash = Math.max(screenFlash, 0.22);
+      screenShake += 2.2;
+      basicComboCooldown = 16;
+      basicComboTimer = 0;
+      basicComboStep = 0;
+      basicChainQueued = false;
+    } else {
+      basicComboTimer = BASIC_COMBO_WINDOW;
+    }
+    screenShake += 0.9;
+    rumble(step === BASIC_COMBO_MAX ? 0.45 : 0.22, step === BASIC_COMBO_MAX ? 120 : 60);
+    playSfx('basic');
+  }
+
+  function startCounterAttack() {
+    if (player.counterActive) return false;
+    if (player.guardSuccessTimer <= 0) return false;
+    if (player.dodgeTimer > 0) return false;
+    const target = (player.counterTarget && player.counterTarget.hp > 0)
+      ? player.counterTarget
+      : (lockOnActive ? lockOnTarget : softLockTarget) || findNearestEnemy(COUNTER_TRACK_RANGE, true);
+    if (!target) return false;
+
+    player.guardSuccessTimer = 0;
+    player.counterActive = true;
+    player.counterTimer = COUNTER_HIT_COUNT * COUNTER_HIT_INTERVAL + 12;
+    player.counterHitIndex = 0;
+    player.counterHitDelay = 0;
+    player.counterTarget = target;
+    player.counterFlash = 18;
+    player.guardTimer = 0;
+    player.guardFlash = 0;
+    player.attackTimer = player.counterTimer;
+    player.attackTimerMax = player.attackTimer;
+    player.attackType = 'counter';
+    player.attackDash = 0;
+    player.attackComboStep = 0;
+    player.slamActive = false;
+    basicComboStep = 0;
+    basicComboTimer = 0;
+    basicChainQueued = false;
+    basicComboCooldown = 0;
+    playerOffenseTimer = Math.max(playerOffenseTimer, player.counterTimer);
+    player.invuln = Math.max(player.invuln, 24);
+
+    const guardY = player.y - player.height * 0.55;
+    const counterColor = resolveFxColor(FX_PALETTES.guard, '#a6f0ff');
+    effects.push({ type: 'guardPulse', x: player.x, y: guardY, life: 18, maxLife: 18, r: 140, color: counterColor });
+    effects.push({ type: 'ring', x: player.x, y: guardY, life: 20, maxLife: 20, r: 120, color: counterColor, width: 4, glow: true });
+    effects.push({ type: 'impact', x: player.x, y: guardY, life: 14, maxLife: 14, r: 70, color: '#ffffff' });
+    spawnSparks(player.x, guardY, 18, [counterColor, '#ffffff'], Math.PI * 2, 7, 20);
+    screenShake += 2.2;
+    screenFlash = Math.max(screenFlash, 0.25);
+    rumble(0.55, 150, 0.35);
+    playSfx('slash');
+    return true;
+  }
+
+  function endCounterAttack() {
+    player.counterActive = false;
+    player.counterTimer = 0;
+    player.counterHitIndex = 0;
+    player.counterHitDelay = 0;
+    player.counterTarget = null;
+    player.counterFlash = 0;
+    player.attackTimer = 0;
+    player.attackTimerMax = 0;
+    player.attackType = '';
+    player.attackDash = 0;
+    player.attackComboStep = 0;
+  }
+
+  function spawnCounterHit(target) {
+    if (!target || target.hp <= 0) return;
+    const hitIndex = player.counterHitIndex + 1;
+    const dir = target.x >= player.x ? 1 : -1;
+    player.facing = dir;
+    const baseY = target.y - target.height * 0.55;
+    const radius = 120 + hitIndex * 6;
+    const damage = 14 + hitIndex * 3;
+    const knock = hitIndex === COUNTER_HIT_COUNT ? 14 : 6;
+    const launch = hitIndex === COUNTER_HIT_COUNT ? 12 : 0;
+    attacks.push({
+      x: target.x,
+      y: baseY,
+      r: radius,
+      damage,
+      frames: 8,
+      knockback: knock,
+      launch,
+      hitStop: hitIndex === COUNTER_HIT_COUNT ? 4 : 3,
+      hitstun: 14 + hitIndex,
+      finisher: hitIndex === COUNTER_HIT_COUNT,
+      hitIds: new Set()
+    });
+    const counterColor = resolveFxColor(FX_PALETTES.guard, '#a6f0ff');
+    const counterAccent = '#ffffff';
+    effects.push({ type: 'slash', x: target.x, y: baseY, life: 16, maxLife: 16, r: radius * 1.15, facing: dir, color: counterColor, accent: counterAccent, angle: -0.75 + hitIndex * 0.08, stretch: 1.25, seed: Math.random() * 10 });
+    effects.push({ type: 'ring', x: target.x, y: baseY, life: 16, maxLife: 16, r: 70 + hitIndex * 8, color: counterAccent, width: 3, glow: true });
+    effects.push({ type: 'guardPulse', x: target.x, y: baseY, life: 12, maxLife: 12, r: 90 + hitIndex * 6, color: counterColor });
+    spawnSparks(target.x, baseY, 14 + hitIndex * 2, [counterColor, '#ffffff'], Math.PI * 2, 8, 18);
+    spawnShockwave(target.x, baseY, counterColor);
+    screenShake += hitIndex === COUNTER_HIT_COUNT ? 2.6 : 1.6;
+    screenFlash = Math.max(screenFlash, hitIndex === COUNTER_HIT_COUNT ? 0.28 : 0.18);
+    if (hitIndex === COUNTER_HIT_COUNT) {
+      rumble(0.6, 160, 0.35);
+    } else {
+      rumble(0.35, 100, 0.25);
+    }
+    playSfx('slash');
+    player.scaleVelX -= 0.12;
+    player.scaleVelY += 0.12;
+    player.counterFlash = Math.max(player.counterFlash, 12);
+    player.counterHitIndex++;
+    player.counterHitDelay = COUNTER_HIT_INTERVAL;
+    player.invuln = Math.max(player.invuln, 10);
+    if (player.counterHitIndex >= COUNTER_HIT_COUNT) {
+      endCounterAttack();
+    }
+  }
+
+  function updateCounterAttack() {
+    if (!player.counterActive) return;
+    if (player.counterTimer > 0) player.counterTimer--;
+    if (player.counterFlash > 0) player.counterFlash--;
+    if (!player.counterTarget || player.counterTarget.hp <= 0) {
+      player.counterTarget = findNearestEnemy(COUNTER_TRACK_RANGE, true);
+    }
+    const target = player.counterTarget;
+    if (!target) {
+      endCounterAttack();
+      return;
+    }
+    const dir = target.x >= player.x ? 1 : -1;
+    player.facing = dir;
+    const desiredX = target.x - dir * 90;
+    const desiredY = target.y;
+    player.x += (desiredX - player.x) * 0.35;
+    player.y += (desiredY - player.y) * 0.25;
+    player.vx *= 0.35;
+    player.vy *= 0.35;
+    player.scaleVelX += dir * 0.08;
+    player.scaleVelY -= 0.06;
+
+    if (Math.random() < 0.7) {
+      effects.push({ type: 'afterimage', x: player.x, y: player.y, life: 10, maxLife: 10, color: '#e8f7ff', scale: 1.35 });
+    }
+    if (stageTime % 3 === 0) {
+      spawnSparks(player.x, player.y - player.height * 0.55, 4, ['#ffffff', '#a6f0ff'], Math.PI * 2, 4.5, 10);
+    }
+
+    if (player.counterHitDelay > 0) player.counterHitDelay--;
+    if (player.counterHitDelay <= 0) {
+      spawnCounterHit(target);
+    }
+    if (!player.counterActive) return;
+    if (player.counterTimer <= 0) {
+      endCounterAttack();
+    }
+  }
+
+  function tryBasicAttack() {
+    if (player.guardSuccessTimer > 0) {
+      if (startCounterAttack()) return;
+    }
+    if (basicComboCooldown > 0) return;
+    if (player.attackType && player.attackType !== 'basic') {
+      if (basicComboTimer > 0 && basicComboStep > 0 && basicComboStep < BASIC_COMBO_MAX) {
+        basicChainQueued = true;
+      }
+      return;
+    }
+    if (player.attackTimer > 0) {
+      if (basicComboTimer > 0 && basicComboStep > 0 && basicComboStep < BASIC_COMBO_MAX) {
+        basicChainQueued = true;
+      }
+      return;
+    }
+    basicChainQueued = false;
+    spawnBasicAttack();
+  }
+
+  function findNextReadyCommandSteps() {
+    const deckLen = commandDeck.length;
+    if (deckLen <= 1) return 0;
+    for (let i = 1; i < deckLen; i++) {
+      const idx = (COMMAND_ACTIVE_INDEX + i + deckLen) % deckLen;
+      const nextCmd = commandDeck[idx];
+      if (nextCmd && nextCmd.timer <= 0) return i;
+    }
+    return 0;
+  }
+
+  function tryUseCommand() {
+    if (commandRotateFrames > 0) return;
+    const cmd = commandDeck[COMMAND_ACTIVE_INDEX] || commandDeck[0];
+    if (cmd.timer > 0) return;
+    spawnAttack(cmd);
+    cmd.timer = cmd.cooldown;
+    const steps = findNextReadyCommandSteps();
+    triggerDeckRotate(1, steps > 0 ? steps : 1);
+  }
+
+  function damageEnemy(enemy, atk) {
+    if (enemy.hp <= 0 || enemy.invuln > 0) return;
+    enemy.hp = Math.max(0, enemy.hp - atk.damage);
+    enemy.invuln = 8;
+    enemy.hitstun = atk.hitstun || 12;
+    enemy.attackState = 'idle';
+    enemy.attackTimer = 0;
+    enemy.attackCooldown = 20;
+    const dir = enemy.x < atk.x ? -1 : 1;
+    enemy.vx += dir * (atk.knockback || 6);
+    if (atk.launch) {
+      enemy.vy = -atk.launch;
+      enemy.onGround = false;
+    }
+    if (atk.finisher) {
+      enemy.vx += dir * 2.5;
+      enemy.hitstun = Math.max(enemy.hitstun, 18);
+      spawnImpact(enemy.x, enemy.y - enemy.height * 0.6, '#fff1a8');
+      screenShake += 1.8;
+      rumble(0.45, 120, 0.3);
+    }
+    effects.push({ type: 'hit', x: enemy.x, y: enemy.y - enemy.height * 0.6, life: 12, maxLife: 12, r: 26 });
+    spawnImpact(enemy.x, enemy.y - enemy.height * 0.6, '#ffd3d3');
+    spawnSparks(enemy.x, enemy.y - enemy.height * 0.6, 10, '#ffb2b2', Math.PI * 2, 5, 14);
+    screenShake += 1.2;
+    rumble(0.22, 70, 0.18);
+    applyHitStop(atk.hitStop || 2, 0.2);
+    playSfx('hit');
+    comboCount = comboTimer > 0 ? comboCount + 1 : 1;
+    comboTimer = COMBO_WINDOW;
+    if (enemy.hp <= 0) {
+      spawnCoinBurst(enemy.x, enemy.y - enemy.height * 0.55, enemy);
+      effects.push({ type: 'burst', x: enemy.x, y: enemy.y - enemy.height * 0.5, life: 20, maxLife: 20, r: 90 });
+      spawnSparks(enemy.x, enemy.y - enemy.height * 0.5, 18, '#ff7aa0', Math.PI * 2, 7, 20);
+      screenShake += 3;
+      applyHitStop(4, 0.35);
+      rumble(0.55, 160, 0.4);
+    }
+  }
+
+  function damagePlayer(amount, sourceX) {
+    if (player.invuln > 0 || gameOver || playerOffenseTimer > 0) return;
+    player.hp = Math.max(0, player.hp - amount);
+    player.invuln = 50;
+    comboCount = 0;
+    comboTimer = 0;
+    playerOffenseTimer = 0;
+    basicComboCooldown = 0;
+    basicComboTimer = 0;
+    basicComboStep = 0;
+    basicChainQueued = false;
+    player.attackTimer = 0;
+    player.attackType = '';
+    player.attackDash = 0;
+    player.slamActive = false;
+    player.guardSuccessTimer = 0;
+    if (player.counterActive) endCounterAttack();
+    hpUiPulse = 0.7;
+    hpUiShake = HP_SHAKE_FRAMES;
+    const dir = player.x < sourceX ? -1 : 1;
+    player.vx += dir * 9;
+    player.vy = Math.max(0, player.vy);
+    player.hurtTimer = 18;
+    player.hurtDir = dir;
+    effects.push({ type: 'hit', x: player.x, y: player.y - player.height * 0.6, life: 14, maxLife: 14, r: 30 });
+    spawnImpact(player.x, player.y - player.height * 0.6, '#ffb9c8');
+    spawnSparks(player.x, player.y - player.height * 0.6, 12, '#ffccd0', Math.PI * 2, 6, 16);
+    screenShake += 4;
+    applyHitStop(4, 0.35);
+    rumble(0.8, 200, 0.6);
+    playSfx('hurt');
+    if (player.hp <= 0) {
+      if (!deathSequence) {
+        deathSequence = true;
+        deathTimer = 0;
+        triggerGameOverAudio();
+        player.vx = dir * 14;
+        player.vy = -6.5;
+        player.renderRot = -dir * 0.6;
+        player.invuln = 999;
+        player.hurtTimer = 0;
+        player.attackTimer = 0;
+        player.attackType = '';
+        player.attackDash = 0;
+        player.slamActive = false;
+        player.deathFreeze = false;
+        player.deathFreezeY = player.y;
+        effects.push({ type: 'burst', x: player.x, y: player.y - player.height * 0.6, life: 24, maxLife: 24, r: 120 });
+        spawnImpact(player.x, player.y - player.height * 0.6, '#bfe7ff');
+        spawnSparks(player.x, player.y - player.height * 0.6, 18, ['#ffffff', '#9fd6ff'], Math.PI * 2, 7, 20);
+        screenShake += 8;
+        screenFlash = Math.max(screenFlash, 0.45);
+        applyHitStop(6, 0.4);
+      }
+      rumble(1, 280, 0.8);
+    }
+  }
+
+  function updateAttacks() {
+    for (let atk of attacks) {
+      if (atk.delay && atk.delay > 0) {
+        atk.delay--;
+        continue;
+      }
+      if (atk.type === 'projectile') {
+        if (atk.target && atk.target.hp <= 0) atk.target = null;
+        if (!atk.target) {
+          atk.target = findNearestEnemyTo(atk.x, atk.y, atk.seekRange || 360);
+        }
+        if (atk.target) {
+          const tx = atk.target.x;
+          const ty = atk.target.y - atk.target.height * 0.5;
+          const desired = Math.atan2(ty - atk.y, tx - atk.x);
+          const ang = Math.atan2(atk.vy, atk.vx);
+          const diff = normalizeAngle(desired - ang);
+          const turn = atk.turn || 0.12;
+          const speed = atk.speed || 6;
+          const nextAng = ang + diff * turn;
+          atk.vx = Math.cos(nextAng) * speed;
+          atk.vy = Math.sin(nextAng) * speed;
+        }
+        atk.x += atk.vx;
+        atk.y += atk.vy;
+        const trailDensity = getFxDensity();
+        const trailChance = 0.5 * trailDensity + 0.05;
+        if (trailDensity > 0 && Math.random() < trailChance && consumeFxBudget()) {
+          const trailColor = atk.accent || atk.color || (atk.visual === 'fire' ? '#ffb067' : (atk.visual === 'ice' ? '#cfefff' : '#bfe7ff'));
+          effects.push({ type: 'spark', x: atk.x + (Math.random() - 0.5) * 6, y: atk.y + (Math.random() - 0.5) * 6, life: 10, maxLife: 10, color: trailColor, size: 2 + Math.random() * 2 });
+        }
+      }
+      for (let e of enemies) {
+        if (e.hp <= 0) continue;
+        if (atk.hitIds.has(e.id)) continue;
+        const ex = e.x;
+        const ey = e.y - e.height * 0.5;
+        const dx = ex - atk.x;
+        const dy = ey - atk.y;
+        const dist = Math.hypot(dx, dy);
+        const hitRadius = (atk.r || 0) * ATTACK_RADIUS_SCALE;
+        if (dist <= hitRadius + ENEMY_HIT_RADIUS) {
+          damageEnemy(e, atk);
+          atk.hitIds.add(e.id);
+          if (atk.type === 'projectile') {
+            const hitColor = atk.accent || atk.color || (atk.visual === 'fire' ? '#ffb067' : (atk.visual === 'ice' ? '#cfefff' : '#bfe7ff'));
+            effects.push({ type: 'impact', x: atk.x, y: atk.y, life: 12, maxLife: 12, r: 40, color: hitColor });
+            effects.push({ type: 'ring', x: atk.x, y: atk.y, life: 12, maxLife: 12, r: 30, color: hitColor });
+            atk.frames = 0;
+            break;
+          }
+        }
+      }
+      atk.frames--;
+    }
+    attacks = attacks.filter(a => a.frames > 0);
+  }
+
+  function updateEnemies() {
+    for (let e of enemies) e.update(player);
+    updateEnemyRespawns();
+    enemies = enemies.filter(e => e.hp > 0 || e.deadTimer < 40);
+  }
+
+  function normalizeAngle(a) {
+    while (a > Math.PI) a -= Math.PI * 2;
+    while (a < -Math.PI) a += Math.PI * 2;
+    return a;
+  }
+
+  function findNearestEnemyTo(x, y, maxRange) {
+    let best = null;
+    let bestScore = maxRange;
+    for (let e of enemies) {
+      if (e.hp <= 0) continue;
+      const ex = e.x;
+      const ey = e.y - e.height * 0.6;
+      const dist = Math.hypot(ex - x, ey - y);
+      if (dist > maxRange) continue;
+      if (dist < bestScore) {
+        bestScore = dist;
+        best = e;
+      }
+    }
+    return best;
+  }
+
+  function findNearestEnemy(maxRange, preferFront = false) {
+    let best = null;
+    let bestScore = maxRange;
+    const px = player.x;
+    const py = player.y - player.height * 0.55;
+    const facing = player.facing || 1;
+    for (let e of enemies) {
+      if (e.hp <= 0) continue;
+      const ex = e.x;
+      const ey = e.y - e.height * 0.6;
+      const dx = ex - px;
+      const dy = ey - py;
+      const dist = Math.hypot(dx, dy);
+      if (dist > maxRange) continue;
+      let score = dist;
+      if (preferFront && dx * facing < 0) score += 120;
+      if (score < bestScore) {
+        bestScore = score;
+        best = e;
+      }
+    }
+    return best;
+  }
+
+  function updateLockTargets() {
+    softLockTarget = findNearestEnemy(SOFT_LOCK_RANGE, true);
+    if (lockOnActive) {
+      if (!lockOnTarget || lockOnTarget.hp <= 0) {
+        lockOnActive = false;
+        lockOnTarget = null;
+      } else {
+        const dx = lockOnTarget.x - player.x;
+        const dy = (lockOnTarget.y - lockOnTarget.height * 0.6) - (player.y - player.height * 0.55);
+        const dist = Math.hypot(dx, dy);
+        if (dist > LOCK_BREAK_RANGE) {
+          lockOnActive = false;
+          lockOnTarget = null;
+          playSfx('lockoff');
+        }
+      }
+    }
+  }
+
+  function toggleLockOn() {
+    if (lockOnActive) {
+      lockOnActive = false;
+      lockOnTarget = null;
+      playSfx('lockoff');
+      return;
+    }
+    const target = findNearestEnemy(LOCK_RANGE, false);
+    if (target) {
+      lockOnActive = true;
+      lockOnTarget = target;
+      playSfx('lockon');
+    } else {
+      playSfx('lockfail');
+    }
+  }
+
+  function checkEnemyContact() {
+    if (player.invuln > 0 || gameOver) return;
+    const px = player.x;
+    const py = player.y - player.height * 0.5;
+    for (let e of enemies) {
+      if (e.hp <= 0) continue;
+      const ex = e.x;
+      const ey = e.y - e.height * 0.5;
+      const dx = ex - px;
+      const dy = ey - py;
+      const dist = Math.hypot(dx, dy);
+      if (e.attackState === 'attack' && !e.attackHit && dist <= e.attackRange + PLAYER_HIT_RADIUS) {
+        if (player.guardTimer > 0) {
+          const guardColor = player.guardColor || '#7ee5ff';
+          const guardY = player.y - player.height * 0.55;
+          e.attackHit = true;
+          player.guardTimer = Math.max(player.guardTimer, GUARD_BONUS_DURATION);
+          player.guardTimerMax = Math.max(player.guardTimerMax, GUARD_BONUS_DURATION);
+          player.guardFlash = 18;
+          player.guardSuccessTimer = COUNTER_WINDOW;
+          player.counterTarget = e;
+          effects.push({ type: 'guardPulse', x: player.x, y: guardY, life: 18, maxLife: 18, r: 130, color: guardColor });
+          effects.push({ type: 'ring', x: player.x, y: guardY, life: 20, maxLife: 20, r: 120, color: guardColor, width: 4, glow: true });
+          effects.push({ type: 'ring', x: player.x, y: guardY, life: 26, maxLife: 26, r: 190, color: '#ffffff', width: 2, expand: 90 });
+          effects.push({ type: 'impact', x: player.x, y: guardY, life: 12, maxLife: 12, r: 60, color: '#ffffff' });
+          spawnSparks(player.x, guardY, 20, [guardColor, '#ffffff'], Math.PI * 2, 8, 20);
+          e.hitstun = Math.max(e.hitstun, 12);
+          e.vx += Math.sign(e.x - player.x) * 4.2;
+          screenShake += 1.6;
+          screenFlash = Math.max(screenFlash, 0.2);
+          rumble(0.45, 110, 0.32);
+          playSfx('guard');
+          break;
+        }
+        damagePlayer(e.damage || 12, e.x);
+        e.attackHit = true;
+        break;
+      }
+    }
+  }
+
+  function updateEffects() {
+    for (let fx of effects) {
+      if (fx.delay && fx.delay > 0) {
+        fx.delay--;
+        continue;
+      }
+      fx.life--;
+      if (fx.vx || fx.vy) {
+        fx.x += fx.vx;
+        fx.y += fx.vy;
+        fx.vx *= 0.9;
+        fx.vy *= 0.9;
+        if (fx.gravity) fx.vy += fx.gravity;
+      }
+      if (fx.grow) fx.r += fx.grow;
+    }
+    effects = effects.filter(fx => fx.life > 0);
+  }
+
+  // ステージデータ（横にすごく長い）
+  let platforms = [];
+  function initPlatforms() {
+    const ch = window.innerHeight;
+    const groundY = ch - 70;
+    platforms = [];
+    const addPlatform = (x, y, w, h = 40, extra = {}) => {
+      platforms.push({ x, y, w, h, ...extra });
+    };
+    const gY = (x, offset = 0) => groundHeightAt(x) - offset;
+    const addBridge = (x, y, length, segments = 6) => {
+      const segW = length / segments;
+      for (let i = 0; i < segments; i++) {
+        const bob = Math.sin(i * 0.8) * 6;
+        addPlatform(x + i * segW, y + bob, segW - 8, 26);
+      }
+    };
+
+    // 地面プロファイル（地形）を構築
+    groundProfile = buildGroundProfile(groundY);
+    groundInfo = { x: 0, y: groundY, w: STAGE_LENGTH, h: 500, ground: true };
+
+    // Zone A: 序盤の段差と高低差
+    addPlatform(520, gY(520, 120), 260);
+    addPlatform(980, gY(980, 190), 300);
+    addPlatform(1480, gY(1480, 260), 260);
+    addPlatform(2100, gY(2100, 180), 320);
+    addPlatform(2680, gY(2680, 240), 240);
+    addBridge(3200, gY(3200, 220), 420, 5);
+    addPlatform(3560, gY(3560, 160), 300);
+
+    // Zone B: 高所ルートと橋
+    addPlatform(4120, gY(4120, 140), 260);
+    addPlatform(4700, gY(4700, 320), 220);
+    addPlatform(5050, gY(5050, 380), 200);
+    addPlatform(5450, gY(5450, 260), 520);
+    addBridge(6100, gY(6100, 260), 620, 7);
+    addPlatform(6860, gY(6860, 220), 280);
+    addPlatform(7320, gY(7320, 140), 320);
+
+    // Zone C: ジグザグ階段と中段の丘
+    addPlatform(7700, gY(7700, 120), 240);
+    addPlatform(8040, gY(8040, 210), 240);
+    addPlatform(8380, gY(8380, 300), 240);
+    addPlatform(8720, gY(8720, 210), 240);
+    addPlatform(9060, gY(9060, 120), 240);
+    addBridge(9800, gY(9800, 320), 520, 6);
+    addPlatform(10400, gY(10400, 230), 480);
+    addPlatform(11040, gY(11040, 260), 260);
+
+    // Zone D: 高所ルートと連結エリア
+    addPlatform(12350, gY(12350, 150), 320);
+    addPlatform(13280, gY(13280, 330), 240);
+    addPlatform(13600, gY(13600, 380), 200);
+    addPlatform(13980, gY(13980, 240), 520);
+    addBridge(14700, gY(14700, 270), 700, 7);
+    addPlatform(15050, gY(15050, 320), 260);
+    addPlatform(15550, gY(15550, 240), 420);
+    addPlatform(16200, gY(16200, 200), 300);
+
+    // Zone E: 終盤の広がり
+    addPlatform(17450, gY(17450, 120), 300);
+    addPlatform(17980, gY(17980, 210), 360);
+    addPlatform(19700, gY(19700, 230), 520);
+    addBridge(20500, gY(20500, 200), 700, 8);
+    addPlatform(21450, gY(21450, 200), 320);
+    addPlatform(22400, gY(22400, 140), 320);
+    addPlatform(22920, gY(22920, 220), 260);
+    addPlatform(23280, gY(23280, 300), 220);
+    liftPlatformsAboveGround(36);
+    initGimmicks();
+    initCoins();
+    initEnemies();
+  }
+
+  function initGimmicks() {
+    gimmicks = [];
+    const addSpring = (x, width = 90, power = 1.35) => {
+      const y = groundHeightAt(x) - 6;
+      gimmicks.push({ type: 'spring', x: x - width / 2, y, w: width, h: 16, power, cooldown: 0 });
+    };
+    const addWind = (x, width = 160, height = 220, strength = 0.35) => {
+      const y = groundHeightAt(x);
+      gimmicks.push({ type: 'wind', x: x - width / 2, y, w: width, h: height, strength });
+    };
+
+    addSpring(2600, 90, 1.4);
+    addWind(6200, 180, 260, 0.4);
+    addSpring(7800, 90, 1.35);
+    addWind(9800, 200, 260, 0.38);
+    addSpring(14500, 100, 1.45);
+    addWind(17000, 200, 280, 0.42);
+    addSpring(22800, 100, 1.4);
+  }
+
+  function clampGroundY(value, baseY) {
+    return Math.min(baseY + 120, Math.max(baseY - 320, value));
+  }
+
+  function buildGroundProfile(baseY) {
+    const nodes = [];
+    let x = 0;
+    let y = baseY;
+    const push = (nx, ny) => {
+      x = nx;
+      y = clampGroundY(ny, baseY);
+      nodes.push({ x, y });
+    };
+    const addFlat = (len) => {
+      push(x + len, y);
+    };
+    const addSlope = (len, rise, steps = 6) => {
+      const dx = len / steps;
+      const dy = rise / steps;
+      for (let i = 0; i < steps; i++) {
+        push(x + dx, y + dy);
+      }
+    };
+    const addHill = (len, amp, steps = 10) => {
+      const base = y;
+      const dx = len / steps;
+      for (let i = 0; i < steps; i++) {
+        const t = (i + 1) / steps;
+        const ny = base + Math.sin(t * Math.PI) * amp;
+        push(x + dx, ny);
+      }
+    };
+    const addWave = (len, amp, cycles = 2, stepsPer = 8) => {
+      const base = y;
+      const total = cycles * stepsPer;
+      const dx = len / total;
+      for (let i = 0; i < total; i++) {
+        const phase = ((i + 1) / stepsPer) * Math.PI * 2;
+        const ny = base + Math.sin(phase) * amp;
+        push(x + dx, ny);
+      }
+    };
+    const addTerrace = (len, stepHeight, steps = 4) => {
+      const seg = len / steps;
+      for (let i = 0; i < steps; i++) {
+        addSlope(seg * 0.4, stepHeight, 2);
+        addFlat(seg * 0.6);
+      }
+    };
+
+    nodes.push({ x, y });
+    addFlat(600);
+    addSlope(800, -120);
+    addFlat(400);
+    addHill(900, 90);
+    addSlope(700, 120);
+    addFlat(500);
+    addWave(1400, 70, 2);
+    addTerrace(1000, -30, 4);
+    addFlat(500);
+    addSlope(1100, -180);
+    addFlat(400);
+    addHill(900, -120);
+    addSlope(700, 140);
+    addFlat(600);
+    addWave(1500, 80, 3);
+    addSlope(1000, 180);
+    addFlat(600);
+    addHill(1000, 120);
+    addFlat(700);
+    addSlope(1200, -220);
+    addFlat(500);
+    addSlope(1200, 220);
+    addFlat(600);
+    addWave(1400, 60, 2);
+    addFlat(300);
+    addSlope(800, -140);
+    addFlat(300);
+    addSlope(800, 140);
+    addFlat(1600);
+
+    if (x < STAGE_LENGTH) addFlat(STAGE_LENGTH - x);
+    if (nodes[nodes.length - 1].x < STAGE_LENGTH) {
+      nodes.push({ x: STAGE_LENGTH, y });
+    }
+    return nodes;
+  }
+
+  function groundHeightAt(x) {
+    if (!groundProfile.length) return window.innerHeight;
+    if (x <= groundProfile[0].x) return groundProfile[0].y;
+    const last = groundProfile[groundProfile.length - 1];
+    if (x >= last.x) return last.y;
+    let lo = 0;
+    let hi = groundProfile.length - 1;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (groundProfile[mid].x <= x) lo = mid;
+      else hi = mid;
+    }
+    const a = groundProfile[lo];
+    const b = groundProfile[hi];
+    const t = (x - a.x) / (b.x - a.x);
+    return a.y + (b.y - a.y) * t;
+  }
+
+  function liftPlatformsAboveGround(clearance = 36) {
+    for (let p of platforms) {
+      if (p.ground) continue;
+      let minGround = Infinity;
+      const step = Math.max(40, p.w / 6);
+      for (let sx = p.x; sx <= p.x + p.w; sx += step) {
+        minGround = Math.min(minGround, groundHeightAt(sx));
+      }
+      minGround = Math.min(minGround, groundHeightAt(p.x + p.w));
+      const targetY = minGround - clearance;
+      if (p.y > targetY) {
+        p.y = targetY;
+      }
+    }
+  }
+
+  function getGroundPointsInRange(startX, endX) {
+    const pts = [];
+    if (!groundProfile.length) return pts;
+    pts.push({ x: startX, y: groundHeightAt(startX) });
+    for (let i = 0; i < groundProfile.length; i++) {
+      const p = groundProfile[i];
+      if (p.x > startX && p.x < endX) pts.push(p);
+    }
+    pts.push({ x: endX, y: groundHeightAt(endX) });
+    return pts;
+  }
+
+  function drawTerrain(ctx, camX, cw, ch) {
+    const startX = Math.max(0, camX - 120);
+    const endX = camX + cw + 120;
+    const pts = getGroundPointsInRange(startX, endX);
+    if (pts.length < 2) return;
+
+    ctx.save();
+    const soilGrad = ctx.createLinearGradient(0, 0, 0, ch + 200);
+    soilGrad.addColorStop(0, '#d9a066');
+    soilGrad.addColorStop(1, '#b87940');
+    ctx.fillStyle = soilGrad;
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.lineTo(pts[pts.length - 1].x, ch + 200);
+    ctx.lineTo(pts[0].x, ch + 200);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = '#7CFC00';
+    ctx.lineWidth = 18;
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.stroke();
+
+    ctx.strokeStyle = '#b7ff6a';
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y - 2);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y - 2);
+    ctx.stroke();
+
+    ctx.fillStyle = '#63e84b';
+    const bladeStep = 22;
+    const bladeStart = Math.floor(startX / bladeStep) * bladeStep;
+    for (let gx = bladeStart; gx < endX; gx += bladeStep) {
+      const gy = groundHeightAt(gx);
+      ctx.beginPath();
+      ctx.moveTo(gx, gy + 2);
+      ctx.lineTo(gx + 6, gy - 10);
+      ctx.lineTo(gx + 12, gy + 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function addEnemySpawn(x, y, platform, kind) {
+    const spawn = { id: enemySpawns.length, x, y, platform, kind, respawn: 0 };
+    enemySpawns.push(spawn);
+    enemies.push(new Enemy(x, y, platform, kind, spawn.id));
+  }
+
+  function updateEnemyRespawns() {
+    if (!enemySpawns.length) return;
+    for (let spawn of enemySpawns) {
+      if (spawn.respawn > 0) {
+        spawn.respawn--;
+        if (spawn.respawn === 0) {
+          const exists = enemies.some(e => e.spawnId === spawn.id && e.hp > 0);
+          if (!exists) {
+            const jitter = (Math.random() - 0.5) * 60;
+            enemies.push(new Enemy(spawn.x + jitter, spawn.y, spawn.platform, spawn.kind, spawn.id));
+          }
+        }
+      }
+    }
+  }
+
+  function initEnemies() {
+    enemies = [];
+    enemySpawns = [];
+    const ground = groundInfo;
+    if (ground) {
+      const spacing = 700;
+      const groundCount = Math.max(16, Math.floor(ground.w / spacing));
+      for (let i = 0; i < groundCount; i++) {
+        const ex = ground.x + 240 + i * spacing + Math.random() * 120;
+        const roll = Math.random();
+        let kind = 'grunt';
+        if (roll < 0.12) kind = 'knight';
+        else if (roll < 0.26) kind = 'brute';
+        else if (roll < 0.42) kind = 'mage';
+        else if (roll < 0.6) kind = 'stalker';
+        else if (roll < 0.8) kind = 'scout';
+        addEnemySpawn(ex, groundHeightAt(ex), ground, kind);
+      }
+    }
+    const ledges = platforms.filter(p => !p.ground && !p.ramp && p.w >= 200);
+    for (let i = 0; i < ledges.length; i++) {
+      if (Math.random() < 0.85) {
+        const p = ledges[i];
+        const ex = p.x + p.w * (0.25 + Math.random() * 0.5);
+        const roll = Math.random();
+        let kind = roll < 0.25 ? 'stalker' : (roll < 0.5 ? 'scout' : (roll < 0.7 ? 'mage' : 'grunt'));
+        addEnemySpawn(ex, p.y, p, kind);
+      }
+    }
+  }
+
+  function updateGimmicks() {
+    for (let g of gimmicks) {
+      if (g.type === 'spring') {
+        if (g.cooldown > 0) g.cooldown--;
+        if (g.cooldown > 0) continue;
+        const inX = player.x >= g.x && player.x <= g.x + g.w;
+        const closeY = Math.abs(player.y - g.y) <= 8;
+        if (player.onGround && inX && closeY) {
+          player.vy = JUMP_FORCE * (g.power || 1.3);
+          player.onGround = false;
+          player.jumpCount = Math.min(player.maxJumps, 1);
+          player.scaleVelX -= 0.12;
+          player.scaleVelY += 0.25;
+          g.cooldown = 24;
+          spawnShockwave(player.x, g.y, '#d6f7ff');
+          spawnSparks(player.x, g.y - 8, 10, ['#ffffff', '#9fe9ff'], Math.PI, 6, 14);
+          screenShake += 1.2;
+          rumble(0.35, 90, 0.22);
+          playSfx('jump');
+        }
+      } else if (g.type === 'wind') {
+        const inX = player.x >= g.x && player.x <= g.x + g.w;
+        const topY = g.y - g.h;
+        const inY = player.y >= topY && player.y <= g.y + 20;
+        if (inX && inY) {
+          player.vy -= g.strength || 0.35;
+          if (player.vy < -9) player.vy = -9;
+          if (Math.random() < 0.25 && consumeFxBudget()) {
+            effects.push({
+              type: 'spark',
+              x: g.x + Math.random() * g.w,
+              y: topY + Math.random() * g.h,
+              life: 16,
+              maxLife: 16,
+              color: 'rgba(200,240,255,0.8)',
+              size: 2 + Math.random() * 2
+            });
+          }
+        }
+      }
+    }
+  }
+
+  function drawGimmicks(ctx, camX, cw) {
+    for (let g of gimmicks) {
+      if (g.x + g.w < camX - 120 || g.x > camX + cw + 120) continue;
+      if (g.type === 'spring') {
+        ctx.save();
+        const pulse = 0.5 + 0.5 * Math.sin(stageTime * 0.2 + g.x * 0.01);
+        const grad = ctx.createLinearGradient(g.x, g.y - 10, g.x, g.y + 16);
+        grad.addColorStop(0, `rgba(180,240,255,${0.8 + 0.2 * pulse})`);
+        grad.addColorStop(1, 'rgba(80,180,220,0.8)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(g.x, g.y - 8, g.w, 16);
+        ctx.strokeStyle = `rgba(255,255,255,${0.5 + 0.3 * pulse})`;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(g.x + 2, g.y - 6, g.w - 4, 12);
+        ctx.restore();
+      } else if (g.type === 'wind') {
+        ctx.save();
+        const pulse = 0.5 + 0.5 * Math.sin(stageTime * 0.12 + g.x * 0.02);
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.fillStyle = `rgba(180,230,255,${0.08 + 0.08 * pulse})`;
+        ctx.fillRect(g.x, g.y - g.h, g.w, g.h);
+        ctx.strokeStyle = `rgba(220,250,255,${0.25 + 0.2 * pulse})`;
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(g.x + 2, g.y - g.h + 2, g.w - 4, g.h - 4);
+        ctx.restore();
+      }
+    }
+  }
+  window.addEventListener('resize', initPlatforms);
+  initPlatforms();
+
+  let stageTime = 0;
+  let cameraX = 0;
+  let screenShake = 0;
+  let hitStop = 0;
+  let screenFlash = 0;
+
+  function drawBackground(ctx, camX, cw, ch) {
+    // 空（プリン.html の昼パレット寄り）
+    const skyGrad = ctx.createLinearGradient(0, 0, 0, ch);
+    skyGrad.addColorStop(0, '#198edc');
+    skyGrad.addColorStop(0.52, '#6cc4ff');
+    skyGrad.addColorStop(1, '#edf8ff');
+    ctx.fillStyle = skyGrad;
+    ctx.fillRect(0, 0, cw, ch);
+
+    // 太陽とハロー
+    const sunX = cw * 0.82;
+    const sunY = ch * 0.18;
+    const sunGrad = ctx.createRadialGradient(sunX, sunY, 60, sunX, sunY, 380);
+    sunGrad.addColorStop(0, 'rgba(255, 255, 240, 0.95)');
+    sunGrad.addColorStop(0.2, 'rgba(255, 235, 180, 0.6)');
+    sunGrad.addColorStop(1, 'rgba(255, 190, 120, 0)');
+    ctx.fillStyle = sunGrad;
+    ctx.beginPath();
+    ctx.arc(sunX, sunY, 380, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 雲
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+    for (let i = 0; i < 14; i++) {
+      let cx = ((i * 456) % 3200) - (camX * 0.18) + (stageTime * 0.6);
+      cx = (cx % 3600);
+      if (cx < -200) cx += 3600;
+      let cy = 40 + ((i * 137) % (ch * 0.35));
+      let scale = 0.55 + ((i * 57) % 50) / 100;
+
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.scale(scale, scale);
+      ctx.beginPath();
+      ctx.arc(0, 0, 40, 0, Math.PI * 2);
+      ctx.arc(35, -15, 50, 0, Math.PI * 2);
+      ctx.arc(70, 0, 40, 0, Math.PI * 2);
+      ctx.arc(35, 10, 40, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // 遠景の山
+    ctx.fillStyle = '#b8d8f0';
+    ctx.beginPath();
+    ctx.moveTo(0, ch);
+    for (let x = 0; x <= cw + 60; x += 60) {
+      let worldX = x + camX * 0.15;
+      let y = ch - 240 - Math.sin(worldX * 0.0016) * 50;
+      ctx.lineTo(x, y);
+    }
+    ctx.lineTo(cw, ch);
+    ctx.fill();
+
+    // 中景の丘
+    ctx.fillStyle = '#92e0d3';
+    ctx.beginPath();
+    ctx.moveTo(0, ch);
+    for (let x = 0; x <= cw + 50; x += 50) {
+      let worldX = x + camX * 0.35;
+      let y = ch - 170 - Math.sin(worldX * 0.0022) * 60;
+      ctx.lineTo(x, y);
+    }
+    ctx.lineTo(cw, ch);
+    ctx.fill();
+
+    // 街のシルエット
+    ctx.fillStyle = 'rgba(60, 90, 120, 0.5)';
+    const cityBase = ch - 140;
+    for (let i = 0; i < 24; i++) {
+      const bw = 80 + (i * 17) % 60;
+      const bh = 60 + (i * 43) % 120;
+      let bx = (i * 180) - (camX * 0.28 % 180);
+      if (bx > cw + 100) continue;
+      if (bx < -200) continue;
+      ctx.fillRect(bx, cityBase - bh, bw, bh);
+    }
+
+    // 手前の丘
+    ctx.fillStyle = '#76D7C4';
+    ctx.beginPath();
+    ctx.moveTo(0, ch);
+    for (let x = 0; x <= cw + 50; x += 50) {
+      let worldX = x + camX * 0.55;
+      let y = ch - 110 - Math.cos(worldX * 0.003) * 40;
+      ctx.lineTo(x, y);
+    }
+    ctx.lineTo(cw, ch);
+    ctx.fill();
+
+    // 空気感の粒子
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.45)';
+    for (let i = 0; i < 24; i++) {
+      let px = ((i * 789 + stageTime) % 3200) - (camX * 0.6);
+      px = (px % 3400);
+      if (px < -100) px += 3400;
+      let py = ch - 320 + Math.sin(stageTime * 0.02 + i * 2) * 140;
+      ctx.beginPath();
+      ctx.arc(px, py, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  function drawPuddingCoin(ctx, x, y, r, spin, options = {}) {
+    const shadow = options.shadow !== false;
+    const pulse = 0.5 + 0.5 * Math.sin(stageTime * 0.12 + (options.pulsePhase || 0));
+    const tilt = Math.cos(spin || 0);
+    const scaleX = 0.35 + 0.65 * Math.abs(tilt);
+    const shine = 0.55 + 0.45 * Math.max(0, tilt);
+
+    if (shadow) {
+      ctx.save();
+      ctx.globalAlpha = 0.22;
+      ctx.fillStyle = '#000';
+      ctx.beginPath();
+      ctx.ellipse(x, y + r * 0.78, r * 0.9, r * 0.28, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(scaleX, 1);
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const glow = ctx.createRadialGradient(0, -r * 0.2, r * 0.2, 0, 0, r * 1.6);
+    glow.addColorStop(0, `rgba(255,245,200,${0.6 * shine})`);
+    glow.addColorStop(0.4, `rgba(255,210,130,${0.35 * shine})`);
+    glow.addColorStop(1, 'rgba(255,200,120,0)');
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, r * 1.6, r * 1.15, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    const topW = r * 1.1;
+    const botW = r * 2.0;
+    const h = r * 1.35;
+    const grad = ctx.createLinearGradient(-r, -h, r, h);
+    grad.addColorStop(0, '#fff7d6');
+    grad.addColorStop(0.35, '#ffd98a');
+    grad.addColorStop(0.65, '#d2a258');
+    grad.addColorStop(1, '#8b5d20');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.moveTo(-topW / 2, -h * 0.55);
+    ctx.lineTo(topW / 2, -h * 0.55);
+    ctx.lineTo(botW / 2, h * 0.45);
+    ctx.quadraticCurveTo(0, h * 0.7, -botW / 2, h * 0.45);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.lineWidth = 2.2;
+    ctx.strokeStyle = `rgba(255,255,255,${0.55 + 0.2 * shine})`;
+    ctx.stroke();
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'overlay';
+    ctx.strokeStyle = `rgba(255,255,255,${0.22 + 0.18 * pulse})`;
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 3; i++) {
+      const yy = -h * 0.25 + i * (h * 0.25);
+      ctx.beginPath();
+      ctx.moveTo(-topW * 0.45, yy);
+      ctx.lineTo(topW * 0.45, yy);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    const iconW = r * 1.1;
+    const iconH = r * 0.9;
+    const iconTop = iconW * 0.5;
+    const iconBot = iconW * 0.95;
+    const drawIcon = (dx, dy, fill, mode = 'source-over') => {
+      ctx.save();
+      ctx.translate(dx, dy);
+      ctx.globalCompositeOperation = mode;
+      ctx.fillStyle = fill;
+      ctx.beginPath();
+      ctx.moveTo(-iconTop / 2, -iconH * 0.45);
+      ctx.lineTo(iconTop / 2, -iconH * 0.45);
+      ctx.lineTo(iconBot / 2, iconH * 0.4);
+      ctx.quadraticCurveTo(0, iconH * 0.62, -iconBot / 2, iconH * 0.4);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    };
+    drawIcon(1.2, 1.2, 'rgba(90,60,20,0.35)', 'multiply');
+    drawIcon(-1.2, -1.2, `rgba(255,255,255,${0.5 * shine})`, 'screen');
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'screen';
+    ctx.strokeStyle = `rgba(255,255,255,${0.5 + 0.2 * pulse})`;
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.moveTo(-r * 0.4, -h * 0.5);
+    ctx.lineTo(r * 0.1, h * 0.5);
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.restore();
+  }
+
+  function drawCoins(ctx, camX, cw) {
+    for (let coin of coins) {
+      const cx = coin.x;
+      const r = coin.r || 18;
+      if (cx + r < camX - 120 || cx - r > camX + cw + 120) continue;
+      drawPuddingCoin(ctx, cx, coin.renderY !== undefined ? coin.renderY : coin.y, r, coin.spin, { shadow: true, pulsePhase: coin.bobPhase });
+    }
+  }
+
+  function drawEffects(ctx) {
+    // 魔法・投射体
+    for (let atk of attacks) {
+      if (atk.type !== 'projectile') continue;
+      const t = atk.maxFrames ? atk.frames / atk.maxFrames : 1;
+      const ang = Math.atan2(atk.vy, atk.vx);
+      ctx.save();
+      ctx.translate(atk.x, atk.y);
+      ctx.rotate(ang);
+      ctx.globalCompositeOperation = 'lighter';
+      if (atk.visual === 'fire') {
+        const main = atk.color || '#ffb067';
+        const accent = atk.accent || '#ffd36b';
+        const coreR = Math.max(10, atk.r * 0.28);
+        const glowR = coreR * 1.45;
+        const glow = ctx.createRadialGradient(0, 0, 2, 0, 0, glowR);
+        glow.addColorStop(0, colorWithAlpha(accent, 1 * t));
+        glow.addColorStop(1, colorWithAlpha(main, 0));
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(0, 0, glowR, 0, Math.PI * 2);
+        ctx.fill();
+        const tailLen = coreR * 2.2;
+        const tail = ctx.createLinearGradient(-tailLen, 0, 0, 0);
+        tail.addColorStop(0, colorWithAlpha(main, 0));
+        tail.addColorStop(1, colorWithAlpha(main, 0.95 * t));
+        ctx.strokeStyle = tail;
+        ctx.lineWidth = 4.5 + coreR * 0.12;
+        ctx.beginPath();
+        ctx.moveTo(-tailLen * 0.9, 0);
+        ctx.lineTo(2, 0);
+        ctx.stroke();
+        ctx.fillStyle = colorWithAlpha(accent, 0.95 * t);
+        ctx.beginPath();
+        ctx.ellipse(3, 0, coreR * 0.55, coreR * 0.4, 0, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (atk.visual === 'ice') {
+        const main = atk.color || '#bfefff';
+        const accent = atk.accent || '#e6fbff';
+        const glow = ctx.createRadialGradient(0, 0, 2, 0, 0, 16);
+        glow.addColorStop(0, colorWithAlpha(accent, 1 * t));
+        glow.addColorStop(1, colorWithAlpha(main, 0));
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(0, 0, 14, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = colorWithAlpha(main, 1 * t);
+        ctx.beginPath();
+        ctx.moveTo(-6, 0);
+        ctx.lineTo(0, -5);
+        ctx.lineTo(10, 0);
+        ctx.lineTo(0, 5);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = colorWithAlpha(accent, 0.85 * t);
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+      } else {
+        const main = atk.color || '#bfe7ff';
+        const accent = atk.accent || '#e0f2ff';
+        const glow = ctx.createRadialGradient(0, 0, 2, 0, 0, 16);
+        glow.addColorStop(0, colorWithAlpha(accent, 1 * t));
+        glow.addColorStop(1, colorWithAlpha(main, 0));
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(0, 0, 14, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = colorWithAlpha(main, 1 * t);
+        ctx.beginPath();
+        ctx.ellipse(2, 0, 7, 4, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    for (let fx of effects) {
+      if (fx.delay && fx.delay > 0) continue;
+      const t = fx.life / fx.maxLife;
+      if (fx.type === 'basicSlash') {
+        if (!player) continue;
+        const step = fx.step || 1;
+        const facing = fx.facing || (player.facing < 0 ? -1 : 1);
+        const maxT = player.attackTimerMax || fx.maxLife || 1;
+        const prog = player.attackType === 'basic' ? (1 - player.attackTimer / maxT) : (1 - t);
+        const swing = getBasicSwing(step, prog);
+        const sword = getBasicSwordLocal(player, step);
+        const start = sword.start;
+        const end = swing;
+        const outerBase = sword.bladeLen * 0.98;
+        const innerBase = outerBase * 0.42;
+        const steps = 18;
+
+        ctx.save();
+        ctx.translate(player.x, player.y);
+        const face = facing < 0 ? -1 : 1;
+        const hurtRatio = (!deathSequence && player.hurtTimer > 0) ? player.hurtTimer / 18 : 0;
+        const hurtRot = hurtRatio * -0.35 * player.hurtDir;
+        ctx.scale(face * player.scaleX, player.scaleY);
+        ctx.rotate(player.renderRot + hurtRot);
+        ctx.transform(1, 0, -player.skewC * face, 1, 0, 0);
+        ctx.translate(0, -player.height);
+        ctx.translate(sword.handX, sword.handY);
+        ctx.globalCompositeOperation = 'lighter';
+
+        const main = fx.color || '#aee7ff';
+        const accent = fx.accent || main;
+        const edge = fx.edge || '#ffffff';
+
+        const reveal = Math.min(1, Math.max(0.1, prog * 1.1));
+        const endReveal = start + (end - start) * reveal;
+        const glow = ctx.createRadialGradient(0, 0, innerBase * 0.2, 0, 0, outerBase * 1.2);
+        glow.addColorStop(0, colorWithAlpha(accent, 0.65 * t));
+        glow.addColorStop(0.5, colorWithAlpha(main, 0.45 * t));
+        glow.addColorStop(1, colorWithAlpha(main, 0));
+        ctx.globalAlpha = Math.min(1, (t + 0.12) * (0.5 + reveal * 0.6));
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(0, 0, outerBase * 1.05, 0, Math.PI * 2);
+        ctx.fill();
+
+        const bladeGrad = ctx.createLinearGradient(-outerBase, -outerBase, outerBase, outerBase);
+        bladeGrad.addColorStop(0, colorWithAlpha(edge, 0.6 * t));
+        bladeGrad.addColorStop(0.35, colorWithAlpha(main, 0.98 * t));
+        bladeGrad.addColorStop(0.7, colorWithAlpha(accent, 0.95 * t));
+        bladeGrad.addColorStop(1, colorWithAlpha(accent, 0));
+        ctx.fillStyle = bladeGrad;
+        ctx.beginPath();
+        for (let i = 0; i <= steps; i++) {
+          const p = i / steps;
+          const ang = start + (endReveal - start) * p;
+          const taper = 0.55 + 0.45 * Math.sin(Math.PI * p);
+          const r = outerBase * taper;
+          const x = Math.cos(ang) * r;
+          const y = Math.sin(ang) * r;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        for (let i = steps; i >= 0; i--) {
+          const p = i / steps;
+          const ang = start + (endReveal - start) * p;
+          const taper = 0.72 + 0.28 * Math.sin(Math.PI * p);
+          const r = innerBase * taper;
+          ctx.lineTo(Math.cos(ang) * r, Math.sin(ang) * r);
+        }
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.globalAlpha = t * (0.55 + reveal * 0.45);
+        ctx.strokeStyle = colorWithAlpha(edge, 0.85 * t);
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        for (let i = 0; i <= steps; i++) {
+          const p = i / steps;
+          const ang = start + (endReveal - start) * p;
+          const taper = 0.6 + 0.4 * Math.sin(Math.PI * p);
+          const r = outerBase * taper;
+          const x = Math.cos(ang) * r;
+          const y = Math.sin(ang) * r;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+
+        ctx.strokeStyle = colorWithAlpha(main, 0.7 * t);
+        ctx.lineWidth = 2.1;
+        ctx.beginPath();
+        for (let i = 0; i <= steps; i++) {
+          const p = i / steps;
+          const ang = start + (endReveal - start) * p;
+          const r = (outerBase + innerBase) * 0.55;
+          const x = Math.cos(ang) * r;
+          const y = Math.sin(ang) * r;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+        ctx.restore();
+      } else if (fx.type === 'slash') {
+        ctx.save();
+        const prog = 1 - t;
+        const facing = fx.facing || 1;
+        const stretch = fx.stretch || 1;
+        const angle = (fx.angle || -0.35) + prog * 0.35;
+        const seed = fx.seed || 0;
+        ctx.translate(fx.x + facing * prog * 18, fx.y - prog * 10);
+        ctx.scale(facing, 1);
+        ctx.rotate(angle);
+        ctx.globalCompositeOperation = 'lighter';
+
+        const main = fx.color || '#ffd36b';
+        const accent = fx.accent || main;
+        const edge = fx.edge || '#ffffff';
+
+        const sweep = Math.PI * (0.62 + prog * 0.6);
+        const start = -sweep * 0.55;
+        const end = sweep * 0.75;
+        const reveal = Math.min(1, Math.max(0, prog * 1.15));
+        const endReveal = start + (end - start) * reveal;
+        const outerBase = fx.r * (1.1 + prog * 0.2) * stretch;
+        const innerBase = fx.r * (0.42 + prog * 0.05) * stretch;
+        const steps = 18;
+
+        const glow = ctx.createRadialGradient(0, 0, innerBase * 0.25, 0, 0, outerBase * 1.25);
+        glow.addColorStop(0, colorWithAlpha(accent, 0.7 * t));
+        glow.addColorStop(0.45, colorWithAlpha(main, 0.45 * t));
+        glow.addColorStop(1, colorWithAlpha(main, 0));
+        ctx.globalAlpha = Math.min(1, (t + 0.15) * (0.5 + reveal * 0.6));
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(0, 0, outerBase * 1.1, 0, Math.PI * 2);
+        ctx.fill();
+
+        const bladeGrad = ctx.createLinearGradient(-outerBase, -outerBase, outerBase, outerBase);
+        bladeGrad.addColorStop(0, colorWithAlpha(edge, 0.6 * t));
+        bladeGrad.addColorStop(0.35, colorWithAlpha(main, 0.98 * t));
+        bladeGrad.addColorStop(0.7, colorWithAlpha(accent, 0.95 * t));
+        bladeGrad.addColorStop(1, colorWithAlpha(accent, 0));
+        ctx.fillStyle = bladeGrad;
+        ctx.beginPath();
+        for (let i = 0; i <= steps; i++) {
+          const p = i / steps;
+          const ang = start + (endReveal - start) * p;
+          const taper = 0.55 + 0.45 * Math.sin(Math.PI * p);
+          const r = outerBase * taper;
+          const x = Math.cos(ang) * r;
+          const y = Math.sin(ang) * r;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        for (let i = steps; i >= 0; i--) {
+          const p = i / steps;
+          const ang = start + (endReveal - start) * p;
+          const taper = 0.72 + 0.28 * Math.sin(Math.PI * p);
+          const r = innerBase * taper;
+          ctx.lineTo(Math.cos(ang) * r, Math.sin(ang) * r);
+        }
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.globalAlpha = t * (0.5 + reveal * 0.5);
+        ctx.strokeStyle = colorWithAlpha(edge, 0.85 * t);
+        ctx.lineWidth = 3.2;
+        ctx.beginPath();
+        for (let i = 0; i <= steps; i++) {
+          const p = i / steps;
+          const ang = start + (endReveal - start) * p;
+          const taper = 0.6 + 0.4 * Math.sin(Math.PI * p);
+          const r = outerBase * taper;
+          const x = Math.cos(ang) * r;
+          const y = Math.sin(ang) * r;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+
+        ctx.strokeStyle = colorWithAlpha(main, 0.7 * t);
+        ctx.lineWidth = 2.1;
+        ctx.beginPath();
+        for (let i = 0; i <= steps; i++) {
+          const p = i / steps;
+          const ang = start + (endReveal - start) * p;
+          const r = (outerBase + innerBase) * 0.55;
+          const x = Math.cos(ang) * r;
+          const y = Math.sin(ang) * r;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+
+        ctx.strokeStyle = colorWithAlpha(accent, 0.6 * t);
+        ctx.lineWidth = 1.6;
+        for (let i = 0; i < 4; i++) {
+          const p = (i + 1) / 5;
+          const ang = start + (endReveal - start) * p;
+          const r = outerBase * (0.68 + 0.18 * Math.sin(Math.PI * p));
+          const len = 16 + (Math.sin(seed * 3 + i) + 1) * 7;
+          ctx.beginPath();
+          ctx.moveTo(Math.cos(ang) * (r - 10), Math.sin(ang) * (r - 10));
+          ctx.lineTo(Math.cos(ang) * (r + len), Math.sin(ang) * (r + len));
+          ctx.stroke();
+        }
+        ctx.restore();
+      } else if (fx.type === 'enemySlash') {
+        ctx.save();
+        const prog = 1 - t;
+        const facing = fx.facing || 1;
+        const angle = (fx.angle || -0.25) + prog * 0.2;
+        const seed = fx.seed || 0;
+        ctx.translate(fx.x + facing * prog * 8, fx.y - prog * 4);
+        ctx.scale(facing, 1);
+        ctx.rotate(angle);
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = t;
+        const sweep = Math.PI * (0.55 + prog * 0.4);
+        const start = -sweep * 0.5;
+        const end = sweep * 0.7;
+        const reveal = Math.min(1, Math.max(0, prog * 1.2));
+        const endReveal = start + (end - start) * reveal;
+        const outerBase = fx.r * (0.9 + prog * 0.25);
+        const innerBase = fx.r * (0.36 + prog * 0.06);
+        const steps = 14;
+        const grad = ctx.createLinearGradient(-outerBase, -outerBase, outerBase, outerBase);
+        grad.addColorStop(0, `rgba(255,255,255,${0.7 * t})`);
+        grad.addColorStop(0.5, fx.color || 'rgba(255,80,80,0.9)');
+        grad.addColorStop(1, 'rgba(255,255,255,0)');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        for (let i = 0; i <= steps; i++) {
+          const p = i / steps;
+          const ang = start + (endReveal - start) * p;
+          const taper = 0.6 + 0.4 * Math.sin(Math.PI * p);
+          const r = outerBase * taper;
+          const x = Math.cos(ang) * r;
+          const y = Math.sin(ang) * r;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        for (let i = steps; i >= 0; i--) {
+          const p = i / steps;
+          const ang = start + (endReveal - start) * p;
+          const taper = 0.72 + 0.28 * Math.sin(Math.PI * p);
+          const r = innerBase * taper;
+          ctx.lineTo(Math.cos(ang) * r, Math.sin(ang) * r);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = `rgba(255,220,220,${0.85 * t})`;
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        for (let i = 0; i <= steps; i++) {
+          const p = i / steps;
+          const ang = start + (endReveal - start) * p;
+          const taper = 0.65 + 0.35 * Math.sin(Math.PI * p);
+          const r = outerBase * taper;
+          const x = Math.cos(ang) * r;
+          const y = Math.sin(ang) * r;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+        ctx.strokeStyle = `rgba(255,120,120,${0.6 * t})`;
+        ctx.lineWidth = 1.2;
+        for (let i = 0; i < 3; i++) {
+          const p = (i + 1) / 4;
+          const ang = start + (endReveal - start) * p;
+          const r = outerBase * (0.7 + 0.15 * Math.sin(Math.PI * p));
+          const len = 10 + (Math.sin(seed * 2 + i) + 1) * 4;
+          ctx.beginPath();
+          ctx.moveTo(Math.cos(ang) * (r - 6), Math.sin(ang) * (r - 6));
+          ctx.lineTo(Math.cos(ang) * (r + len), Math.sin(ang) * (r + len));
+          ctx.stroke();
+        }
+        ctx.restore();
+      } else if (fx.type === 'spin') {
+        ctx.save();
+        const prog = 1 - t;
+        const r = fx.r * (0.8 + prog * 0.25);
+        const spin = stageTime * (fx.spin || 0.12);
+        ctx.translate(fx.x, fx.y);
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = t;
+        const main = fx.color || '#e2a6ff';
+        const accent = fx.accent || main;
+        const edge = fx.edge || '#ffffff';
+        const bladeCount = fx.blades || 3;
+        for (let i = 0; i < bladeCount; i++) {
+          const ang = spin + (Math.PI * 2 * i) / bladeCount;
+          ctx.save();
+          ctx.rotate(ang);
+          const bladeLen = r * (1.05 + prog * 0.2);
+          const bladeW = (fx.blades ? 26 : 22) + prog * 6;
+          const grad = ctx.createLinearGradient(0, -bladeW, bladeLen, bladeW);
+          grad.addColorStop(0, colorWithAlpha(edge, 0.6 * t));
+          grad.addColorStop(0.4, colorWithAlpha(main, 1 * t));
+          grad.addColorStop(0.75, colorWithAlpha(accent, 0.95 * t));
+          grad.addColorStop(1, colorWithAlpha(accent, 0));
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.moveTo(r * 0.15, -bladeW * 0.45);
+          ctx.quadraticCurveTo(bladeLen * 0.6, 0, bladeLen, bladeW * 0.45);
+          ctx.quadraticCurveTo(bladeLen * 0.6, bladeW * 0.8, r * 0.1, bladeW * 0.2);
+          ctx.closePath();
+          ctx.fill();
+          ctx.restore();
+        }
+        const coreGlow = ctx.createRadialGradient(0, 0, r * 0.1, 0, 0, r * 0.8);
+        coreGlow.addColorStop(0, colorWithAlpha(accent, 0.7 * t));
+        coreGlow.addColorStop(0.7, colorWithAlpha(main, 0.45 * t));
+        coreGlow.addColorStop(1, colorWithAlpha(main, 0));
+        ctx.fillStyle = coreGlow;
+        ctx.beginPath();
+        ctx.arc(0, 0, r * 0.9, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = colorWithAlpha(edge, 0.65 * t);
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.arc(0, 0, r * 0.85, spin, spin + Math.PI * 1.6);
+        ctx.stroke();
+        ctx.strokeStyle = colorWithAlpha(accent, 0.55 * t);
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(0, 0, r * 0.55, -spin, -spin + Math.PI * 1.4);
+        ctx.stroke();
+        ctx.restore();
+      } else if (fx.type === 'thunder') {
+        ctx.save();
+        const prog = 1 - t;
+        const height = fx.height || 200;
+        const topY = fx.y - height;
+        const seed = fx.seed || 0;
+        ctx.globalCompositeOperation = 'lighter';
+        const boltColor = fx.color || '#bfe7ff';
+        const boltAccent = fx.accent || boltColor;
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = colorWithAlpha(boltColor, 0.95 * t);
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(fx.x, topY);
+        for (let i = 1; i <= 6; i++) {
+          const py = topY + (height / 6) * i;
+          const jitter = Math.sin(seed + i * 2.1 + stageTime * 0.2) * 12 * (0.6 + prog * 0.4);
+          ctx.lineTo(fx.x + jitter, py);
+        }
+        ctx.stroke();
+        const glow = ctx.createRadialGradient(fx.x, fx.y, 6, fx.x, fx.y, 70);
+        glow.addColorStop(0, colorWithAlpha(boltAccent, 0.9 * t));
+        glow.addColorStop(1, colorWithAlpha(boltColor, 0));
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(fx.x, fx.y, 40 + prog * 30, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      } else if (fx.type === 'ice') {
+        ctx.save();
+        const prog = 1 - t;
+        ctx.translate(fx.x, fx.y);
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = t;
+        const main = fx.color || '#bfefff';
+        const accent = fx.accent || '#e6fbff';
+        const shardCount = 5;
+        const spread = fx.spread || 0.9;
+        for (let i = 0; i < shardCount; i++) {
+          const p = i / (shardCount - 1);
+          const ang = (-0.7 + p * 1.4) * spread;
+          const len = 24 + p * 10 + prog * 16;
+          const w = 6 + prog * 4;
+          ctx.save();
+          ctx.rotate(ang);
+          const grad = ctx.createLinearGradient(0, -w, len, w);
+          grad.addColorStop(0, colorWithAlpha(accent, 0.9 * t));
+          grad.addColorStop(0.5, colorWithAlpha(main, 0.9 * t));
+          grad.addColorStop(1, colorWithAlpha(main, 0));
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.moveTo(0, -w * 0.5);
+          ctx.lineTo(len * 0.7, -w * 0.1);
+          ctx.lineTo(len, 0);
+          ctx.lineTo(len * 0.7, w * 0.1);
+          ctx.lineTo(0, w * 0.5);
+          ctx.closePath();
+          ctx.fill();
+          ctx.restore();
+        }
+        ctx.restore();
+      } else if (fx.type === 'fireburst') {
+        ctx.save();
+        const prog = 1 - t;
+        const main = fx.color || '#ff8f3d';
+        const accent = fx.accent || '#ffd36b';
+        const r = fx.r * (0.6 + prog * 0.6);
+        ctx.globalCompositeOperation = 'lighter';
+        const glow = ctx.createRadialGradient(fx.x, fx.y, r * 0.1, fx.x, fx.y, r);
+        glow.addColorStop(0, colorWithAlpha(accent, 0.95 * t));
+        glow.addColorStop(0.6, colorWithAlpha(main, 0.7 * t));
+        glow.addColorStop(1, colorWithAlpha(main, 0));
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(fx.x, fx.y, r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = colorWithAlpha(accent, 0.8 * t);
+        ctx.lineWidth = 3;
+        for (let i = 0; i < 7; i++) {
+          const ang = (Math.PI * 2 * i) / 7 + prog * 0.6;
+          const r0 = r * 0.45;
+          const r1 = r * (0.9 + prog * 0.15);
+          ctx.beginPath();
+          ctx.moveTo(fx.x + Math.cos(ang) * r0, fx.y + Math.sin(ang) * r0);
+          ctx.lineTo(fx.x + Math.cos(ang) * r1, fx.y + Math.sin(ang) * r1);
+          ctx.stroke();
+        }
+        ctx.restore();
+      } else if (fx.type === 'aero') {
+        ctx.save();
+        const prog = 1 - t;
+        const main = fx.color || '#8fffd0';
+        const accent = fx.accent || '#c9fff0';
+        const r = fx.r * (0.75 + prog * 0.3);
+        const spin = stageTime * (fx.spin || 0.18);
+        ctx.translate(fx.x, fx.y);
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = t;
+        for (let i = 0; i < 4; i++) {
+          const ratio = 0.55 + i * 0.14;
+          ctx.strokeStyle = colorWithAlpha(i % 2 === 0 ? main : accent, 0.75 * t);
+          ctx.lineWidth = 3 - i * 0.35;
+          ctx.beginPath();
+          ctx.arc(0, 0, r * ratio, spin * (1 + i * 0.2), spin * (1 + i * 0.2) + Math.PI * (1.3 + i * 0.1));
+          ctx.stroke();
+        }
+        for (let i = 0; i < 6; i++) {
+          const ang = spin + (Math.PI * 2 * i) / 6;
+          const len = r * (0.3 + (i % 3) * 0.12);
+          ctx.strokeStyle = colorWithAlpha(accent, 0.6 * t);
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(Math.cos(ang) * (r * 0.3), Math.sin(ang) * (r * 0.3));
+          ctx.lineTo(Math.cos(ang) * (r * 0.3 + len), Math.sin(ang) * (r * 0.3 + len));
+          ctx.stroke();
+        }
+        ctx.restore();
+      } else if (fx.type === 'heal') {
+        ctx.save();
+        const prog = 1 - t;
+        const r = fx.r * (0.55 + prog * 0.5);
+        const spin = stageTime * 0.06;
+        ctx.translate(fx.x, fx.y);
+        ctx.globalCompositeOperation = 'lighter';
+        const healColor = fx.color || '#9cffb0';
+        ctx.globalAlpha = t;
+        ctx.strokeStyle = healColor;
+        ctx.lineWidth = 5;
+        ctx.beginPath();
+        ctx.arc(0, 0, r, spin, spin + Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([8, 10]);
+        ctx.globalAlpha = t * 0.75;
+        ctx.strokeStyle = 'rgba(235,255,245,1)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(0, 0, r * 0.65, -spin, -spin + Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.globalAlpha = t;
+        ctx.strokeStyle = 'rgba(255,255,255,1)';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(-18, 0);
+        ctx.lineTo(18, 0);
+        ctx.moveTo(0, -18);
+        ctx.lineTo(0, 18);
+        ctx.stroke();
+        ctx.globalAlpha = t * 0.8;
+        ctx.strokeStyle = healColor;
+        ctx.lineWidth = 2;
+        for (let i = 0; i < 6; i++) {
+          const ang = spin + (Math.PI * 2 * i) / 6;
+          const r0 = r * 0.4;
+          const r1 = r * 0.9;
+          ctx.beginPath();
+          ctx.moveTo(Math.cos(ang) * r0, Math.sin(ang) * r0);
+          ctx.lineTo(Math.cos(ang) * r1, Math.sin(ang) * r1);
+          ctx.stroke();
+        }
+        ctx.restore();
+      } else if (fx.type === 'hit') {
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        const hitColor = fx.color || '#ff7aa0';
+        ctx.fillStyle = colorWithAlpha(hitColor, t);
+        ctx.beginPath();
+        ctx.arc(fx.x, fx.y, fx.r * (1 - t * 0.4), 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = colorWithAlpha('#ffffff', t);
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(fx.x - 10, fx.y - 10);
+        ctx.lineTo(fx.x + 10, fx.y + 10);
+        ctx.moveTo(fx.x + 10, fx.y - 10);
+        ctx.lineTo(fx.x - 10, fx.y + 10);
+        ctx.stroke();
+        ctx.restore();
+      } else if (fx.type === 'burst') {
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.strokeStyle = `rgba(255, 120, 200, ${t})`;
+        ctx.lineWidth = 6;
+        ctx.beginPath();
+        ctx.arc(fx.x, fx.y, fx.r * (0.75 + (1 - t) * 0.5), 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      } else if (fx.type === 'spark') {
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = t;
+        ctx.fillStyle = fx.color || `rgba(255,255,255,1)`;
+        ctx.beginPath();
+        ctx.arc(fx.x, fx.y, fx.size * (0.6 + (1 - t) * 0.5), 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      } else if (fx.type === 'ring') {
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = t;
+        const expand = fx.expand !== undefined ? fx.expand : 50;
+        const radius = fx.r + (1 - t) * expand;
+        const ringColor = fx.color || '#ffffff';
+        if (fx.glow) {
+          ctx.shadowColor = colorWithAlpha(ringColor, 0.7 * t);
+          ctx.shadowBlur = 14;
+        }
+        ctx.strokeStyle = colorWithAlpha(ringColor, t);
+        ctx.lineWidth = fx.width || 3;
+        ctx.beginPath();
+        ctx.arc(fx.x, fx.y, radius, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      } else if (fx.type === 'guardPulse') {
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        const prog = 1 - t;
+        const r = fx.r * (0.65 + prog * 0.7);
+        const pulseColor = fx.color || '#7ee5ff';
+        const glow = ctx.createRadialGradient(fx.x, fx.y, r * 0.1, fx.x, fx.y, r);
+        glow.addColorStop(0, colorWithAlpha(pulseColor, 0.75 * t));
+        glow.addColorStop(0.5, colorWithAlpha(pulseColor, 0.35 * t));
+        glow.addColorStop(1, colorWithAlpha(pulseColor, 0));
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(fx.x, fx.y, r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = colorWithAlpha('#ffffff', 0.8 * t);
+        ctx.lineWidth = 3 + prog * 2;
+        ctx.beginPath();
+        ctx.arc(fx.x, fx.y, r * 0.85, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      } else if (fx.type === 'impact') {
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = t;
+        const impactColor = fx.color || '#ffffff';
+        ctx.strokeStyle = colorWithAlpha(impactColor, t);
+        ctx.lineWidth = 3;
+        for (let i = 0; i < 8; i++) {
+          const ang = (Math.PI * 2 * i) / 8;
+          const r0 = fx.r * 0.3;
+          const r1 = fx.r * (0.9 + (1 - t) * 0.4);
+          ctx.beginPath();
+          ctx.moveTo(fx.x + Math.cos(ang) * r0, fx.y + Math.sin(ang) * r0);
+          ctx.lineTo(fx.x + Math.cos(ang) * r1, fx.y + Math.sin(ang) * r1);
+          ctx.stroke();
+        }
+        ctx.restore();
+      } else if (fx.type === 'pillar') {
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = t;
+        const h = fx.height || 140;
+        const w = 28 + (1 - t) * 10;
+        const grad = ctx.createLinearGradient(fx.x, fx.y - h, fx.x, fx.y);
+        grad.addColorStop(0, 'rgba(255,255,255,0)');
+        grad.addColorStop(0.3, fx.color || 'rgba(140,255,180,0.8)');
+        grad.addColorStop(1, 'rgba(255,255,255,0)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(fx.x - w / 2, fx.y - h, w, h);
+        ctx.strokeStyle = `rgba(255,255,255,${0.4 * t})`;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(fx.x, fx.y - h);
+        ctx.lineTo(fx.x, fx.y);
+        ctx.stroke();
+        ctx.restore();
+      } else if (fx.type === 'dash') {
+        ctx.save();
+        ctx.translate(fx.x, fx.y);
+        ctx.rotate(fx.angle || 0);
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = t;
+        const len = fx.len || 140;
+        const dashColor = fx.color || '#7de3ff';
+        const dashAccent = fx.accent || '#ffffff';
+        ctx.strokeStyle = colorWithAlpha(dashColor, 0.9 * t);
+        ctx.lineWidth = 4;
+        for (let i = -2; i <= 2; i++) {
+          ctx.beginPath();
+          ctx.moveTo(-len * (0.4 + (1 - t) * 0.2), i * 6);
+          ctx.lineTo(len * (0.6 + (1 - t) * 0.2), i * 2);
+          ctx.stroke();
+        }
+        ctx.strokeStyle = colorWithAlpha(dashAccent, 0.7 * t);
+        ctx.lineWidth = 2;
+        for (let i = -1; i <= 1; i++) {
+          ctx.beginPath();
+          ctx.moveTo(-len * 0.35, i * 4);
+          ctx.lineTo(len * 0.55, i * 1.4);
+          ctx.stroke();
+        }
+        ctx.restore();
+      } else if (fx.type === 'afterimage') {
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = t * 0.8;
+        ctx.fillStyle = fx.color || '#b9f1ff';
+        ctx.beginPath();
+        ctx.ellipse(fx.x, fx.y - 40, 40 * (fx.scale || 1), 24 * (fx.scale || 1), 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+  }
+
+  function drawCoinCounter(ctx, cw, ch) {
+    const panelW = 140;
+    const panelH = 40;
+    const x = 20;
+    const y = 20;
+    const pulse = coinPulse;
+
+    ctx.save();
+    drawRoundedRect(ctx, x, y, panelW, panelH, 10);
+    const glassGrad = ctx.createLinearGradient(x, y, x, y + panelH);
+    glassGrad.addColorStop(0, `rgba(255,255,255,${0.18 + 0.15 * pulse})`);
+    glassGrad.addColorStop(1, 'rgba(255,255,255,0.06)');
+    ctx.fillStyle = glassGrad;
+    ctx.fill();
+    ctx.strokeStyle = `rgba(255,255,255,${0.35 + 0.2 * pulse})`;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.save();
+    drawPuddingCoin(ctx, x + 24, y + panelH / 2 + 1, 16, stageTime * 0.08, { shadow: false, pulsePhase: 1.2 });
+    ctx.font = '600 16px Orbitron, sans-serif';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#000000';
+    ctx.fillText(`x${coinCount}`, x + 58, y + panelH / 2 + 1);
+    ctx.restore();
+  }
+
+  function drawCommandDeck(ctx, cw, ch) {
+    const slotW = 150;
+    const slotH = COMMAND_SLOT_H;
+    const slotGap = COMMAND_SLOT_GAP;
+    const paddingX = 12;
+    const paddingY = 12;
+    const listH = slotH * 3 + slotGap * 2;
+    const panelW = slotW + paddingX * 2;
+    const panelH = listH + paddingY * 2;
+    const deckX = 20;
+    const deckY = ch - panelH - 20;
+    const deckLen = commandDeck.length;
+    const progress = commandRotateFrames > 0 ? (COMMAND_ROTATE_FRAMES - commandRotateFrames) / COMMAND_ROTATE_FRAMES : 0;
+    const ease = progress * progress * (3 - 2 * progress);
+    const offsetY = ease * (slotH + slotGap) * (commandRotateFrames > 0 ? commandRotateDir : 0);
+    const pulse = 0.5 + 0.5 * Math.sin(stageTime * 0.08);
+
+    function drawRoundedRect(x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+      ctx.lineTo(x + w, y + h - r);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      ctx.lineTo(x + r, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+      ctx.lineTo(x, y + r);
+      ctx.quadraticCurveTo(x, y, x + r, y);
+      ctx.closePath();
+    }
+
+    ctx.save();
+    ctx.textBaseline = 'middle';
+    ctx.font = '12px Orbitron, sans-serif';
+
+    // グラス風コンパクトパネル
+    drawRoundedRect(deckX, deckY, panelW, panelH, 10);
+    const glassGrad = ctx.createLinearGradient(deckX, deckY, deckX, deckY + panelH);
+    glassGrad.addColorStop(0, 'rgba(255,255,255,0.16)');
+    glassGrad.addColorStop(1, 'rgba(255,255,255,0.04)');
+    ctx.fillStyle = glassGrad;
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(180, 230, 255, 0.45)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    ctx.beginPath();
+    ctx.moveTo(deckX + 8, deckY + 8);
+    ctx.lineTo(deckX + panelW - 8, deckY + 8);
+    ctx.stroke();
+
+    const listX = deckX + paddingX;
+    const listY = deckY + paddingY;
+    const listW = slotW;
+    const listCenterY = listY + listH / 2 - slotH / 2;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(listX, listY, listW, listH);
+    ctx.clip();
+
+    for (let i = -1; i <= 1; i++) {
+      if (deckLen <= 0) continue;
+      const idx = (COMMAND_ACTIVE_INDEX + i + deckLen) % deckLen;
+      const cmd = commandDeck[idx];
+      const slide = offsetY / (slotH + slotGap);
+      const depth = Math.abs(i - slide);
+      const scale = 1 - Math.min(0.22, depth * 0.12);
+      const y = listCenterY + i * (slotH + slotGap) - offsetY;
+      const isSelected = i === 0;
+      const w = (isSelected ? slotW + 12 : slotW) * scale;
+      const h = (isSelected ? slotH + 6 : slotH) * scale;
+      const x = listX + (slotW - w) / 2 + (isSelected ? -2 : 0);
+
+      if (y < deckY - slotH * 2 || y > ch + slotH) continue;
+
+      const glowAlpha = isSelected ? 0.18 + pulse * 0.25 : 0.05;
+      ctx.globalAlpha = 0.85 - depth * 0.25;
+      ctx.fillStyle = `rgba(100, 210, 255, ${glowAlpha})`;
+      ctx.fillRect(x - 4, y - 4, w + 8, h + 8);
+
+      const grad = ctx.createLinearGradient(x, y, x + w, y);
+      grad.addColorStop(0, cmd.color);
+      grad.addColorStop(1, '#111');
+      ctx.fillStyle = grad;
+      ctx.fillRect(x, y, w, h);
+
+      if (cmd.timer > 0) {
+        const coolRatio = cmd.timer / cmd.cooldown;
+        ctx.fillStyle = `rgba(0,0,0,${0.4 + coolRatio * 0.4})`;
+        ctx.fillRect(x, y, w, h);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(x, y + h - 4, w * (1 - coolRatio), 4);
+      }
+
+      ctx.strokeStyle = isSelected ? '#ffffff' : 'rgba(255,255,255,0.35)';
+      ctx.lineWidth = isSelected ? 2 : 1;
+      ctx.strokeRect(x, y, w, h);
+
+      // アイコン
+      ctx.save();
+      ctx.translate(x + 14, y + h / 2);
+      ctx.fillStyle = '#ffffff';
+      if (cmd.type === 'heal') {
+        ctx.fillRect(-4, -10, 8, 20);
+        ctx.fillRect(-10, -4, 20, 8);
+      } else {
+        ctx.beginPath();
+        ctx.moveTo(-5, -9);
+        ctx.lineTo(7, 0);
+        ctx.lineTo(-5, 9);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.restore();
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = isSelected ? '13px Orbitron, sans-serif' : '11px Orbitron, sans-serif';
+      ctx.fillText(cmd.name, x + 30, y + h / 2);
+    }
+
+    ctx.restore();
+    ctx.restore();
+  }
+
+  function drawHPGauge(ctx, cw, ch) {
+    const barW = 240;
+    const barH = 18;
+    let x = cw - barW - 24;
+    let y = ch - barH - 24;
+    const hpRatio = Math.max(0, player.hpDisplay / player.maxHp);
+    const lagRatio = Math.max(0, player.hpLag / player.maxHp);
+
+    let shakeX = 0;
+    let shakeY = 0;
+    if (hpUiShake > 0) {
+      const t = hpUiShake / HP_SHAKE_FRAMES;
+      const amp = 4 + 6 * t;
+      shakeX = Math.sin(stageTime * 0.6) * amp;
+    }
+    x += shakeX;
+    y += shakeY;
+
+    ctx.save();
+    if (hpUiPulse > 0) {
+      ctx.globalAlpha = Math.min(0.7, hpUiPulse);
+      ctx.shadowColor = 'rgba(16, 168, 110, 0.6)';
+      ctx.shadowBlur = 18;
+      ctx.fillStyle = 'rgba(16, 168, 110, 0.18)';
+      drawRoundedRect(ctx, x - 2, y - 2, barW + 4, barH + 4, 5);
+      ctx.fill();
+    }
+    ctx.restore();
+
+    drawKhHpBar(ctx, x, y, barW, barH, hpRatio, lagRatio, {
+      radius: 4,
+      pad: 2,
+      ticks: false,
+      segments: 12,
+      sheen: false
+    });
+  }
+
+  function drawCombo(ctx, cw, ch) {
+    if (comboCount <= 1 || comboTimer <= 0) return;
+    const alpha = Math.min(1, comboTimer / COMBO_WINDOW);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.textAlign = 'center';
+    ctx.font = '28px Orbitron, sans-serif';
+    ctx.fillStyle = 'rgba(255,255,255,0.95)';
+    ctx.fillText(`COMBO x${comboCount}`, cw / 2, 70);
+    ctx.font = '14px Orbitron, sans-serif';
+    if (comboCount >= 3) {
+      ctx.fillStyle = 'rgba(255, 220, 120, 0.95)';
+      ctx.fillText('FINISHER READY', cw / 2, 92);
+    } else {
+      ctx.fillStyle = 'rgba(160, 220, 255, 0.9)';
+      ctx.fillText('KEEP THE RHYTHM', cw / 2, 92);
+    }
+    ctx.restore();
+    ctx.textAlign = 'left';
+  }
+
+  function drawLockOnMarker(ctx, target, strong) {
+    if (!target || target.hp <= 0) return;
+    const x = target.x;
+    const y = target.y - target.height * 0.7;
+    const pulse = Math.sin(stageTime * 0.12) * 2;
+    const r = (strong ? 42 : 30) + pulse;
+    const alpha = strong ? 0.9 : 0.45;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = strong ? `rgba(120,220,255,${alpha})` : `rgba(255,255,255,${alpha})`;
+    ctx.lineWidth = strong ? 2.4 : 1.4;
+
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(x, y - r * 0.42);
+    ctx.lineTo(x + r * 0.42, y);
+    ctx.lineTo(x, y + r * 0.42);
+    ctx.lineTo(x - r * 0.42, y);
+    ctx.closePath();
+    ctx.stroke();
+
+    const bracketR = r + 6;
+    const bracketLen = strong ? 12 : 8;
+    const spin = stageTime * 0.03;
+    for (let i = 0; i < 4; i++) {
+      const ang = spin + i * (Math.PI / 2);
+      const bx = Math.cos(ang) * bracketR;
+      const by = Math.sin(ang) * bracketR;
+      const tx = Math.cos(ang) * (bracketR + bracketLen);
+      const ty = Math.sin(ang) * (bracketR + bracketLen);
+      ctx.beginPath();
+      ctx.moveTo(x + bx, y + by);
+      ctx.lineTo(x + tx, y + ty);
+      ctx.stroke();
+    }
+
+    if (strong) {
+      ctx.strokeStyle = `rgba(120,220,255,${0.35 + 0.2 * Math.sin(stageTime * 0.1)})`;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(player.x, player.y - player.height * 0.6);
+      ctx.lineTo(x, y);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawLockOn(ctx) {
+    if (lockOnActive && lockOnTarget) {
+      drawLockOnMarker(ctx, lockOnTarget, true);
+    } else if (softLockTarget) {
+      drawLockOnMarker(ctx, softLockTarget, false);
+    }
+  }
+
+  function drawTargetHP(ctx, cw, ch) {
+    const target = lockOnActive && lockOnTarget ? lockOnTarget : softLockTarget;
+    if (!target || target.hp <= 0) return;
+    const strong = lockOnActive && lockOnTarget;
+    const barW = 240;
+    const barH = 16;
+    const x = cw - barW - 24;
+    const y = 20;
+    const hpRatio = Math.max(0, target.hpDisplay / target.maxHp);
+    const lagRatio = Math.max(0, target.hpLag / target.maxHp);
+
+    drawKhHpBar(ctx, x, y, barW, barH, hpRatio, lagRatio, {
+      radius: 4,
+      pad: 2,
+      ticks: false,
+      segments: 12,
+      sheen: false,
+      alpha: strong ? 1 : 0.7
+    });
+  }
+
+  function drawGameOver(ctx, cw, ch) {
+    const t = Math.min(1, gameOverTimer / 90);
+    const pulse = 0.5 + 0.5 * Math.sin(gameOverTimer * 0.05);
+    const cx = cw / 2;
+    const cy = ch / 2;
+    ctx.save();
+    ctx.fillStyle = `rgba(4,6,12,${0.6 + t * 0.28})`;
+    ctx.fillRect(0, 0, cw, ch);
+
+    const glow = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(cw, ch) * 0.65);
+    glow.addColorStop(0, `rgba(80,140,255,${0.2 + 0.2 * pulse})`);
+    glow.addColorStop(0.45, 'rgba(20,30,50,0)');
+    glow.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = glow;
+    ctx.fillRect(0, 0, cw, ch);
+
+    for (let i = 0; i < 4; i++) {
+      const x = cx + (i - 1.5) * 120 + Math.sin(gameOverTimer * 0.02 + i) * 30;
+      const beam = ctx.createLinearGradient(x, cy - 220, x, cy + 220);
+      beam.addColorStop(0, 'rgba(120,180,255,0)');
+      beam.addColorStop(0.5, `rgba(120,180,255,${0.18 + 0.12 * pulse})`);
+      beam.addColorStop(1, 'rgba(120,180,255,0)');
+      ctx.fillStyle = beam;
+      ctx.fillRect(x - 18, cy - 220, 36, 440);
+    }
+
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#e9f4ff';
+    ctx.shadowColor = 'rgba(120,180,255,0.85)';
+    ctx.shadowBlur = 26;
+    ctx.font = '700 56px Orbitron, sans-serif';
+    ctx.fillText('GAME OVER', cx, cy - 20);
+    ctx.shadowBlur = 0;
+    ctx.font = '16px Orbitron, sans-serif';
+    ctx.fillStyle = `rgba(210,235,255,${0.75 + 0.2 * pulse})`;
+    ctx.fillText('Rキーで再開', cx, cy + 22);
+    ctx.restore();
+    ctx.textAlign = 'left';
+  }
+
+  function drawDeathOverlay(ctx, cw, ch) {
+    if (!deathSequence || gameOver) return;
+    const t = Math.min(1, deathTimer / 90);
+    const pulse = 0.5 + 0.5 * Math.sin(deathTimer * 0.18);
+    const px = player.x - cameraX;
+    const py = player.y - player.height * 0.6;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalCompositeOperation = 'screen';
+    ctx.filter = `blur(${6 + 6 * t}px)`;
+    const glow = ctx.createRadialGradient(px, py, 20, px, py, Math.max(cw, ch) * (0.35 + 0.2 * t));
+    glow.addColorStop(0, `rgba(255,255,255,${0.45 + 0.25 * t})`);
+    glow.addColorStop(0.4, `rgba(140,210,255,${0.35 * t})`);
+    glow.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = glow;
+    ctx.fillRect(0, 0, cw, ch);
+    ctx.filter = 'none';
+
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = `rgba(160,220,255,${0.25 + 0.3 * pulse})`;
+    ctx.lineWidth = 2;
+    for (let i = 0; i < 4; i++) {
+      const ang = (Math.PI * 2 * i) / 4 + deathTimer * 0.02;
+      const r0 = 60;
+      const r1 = 220 + 80 * t;
+      ctx.beginPath();
+      ctx.moveTo(px + Math.cos(ang) * r0, py + Math.sin(ang) * r0);
+      ctx.lineTo(px + Math.cos(ang) * r1, py + Math.sin(ang) * r1);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function applyPostEffects() {
+    if (BLOOM_ENABLED) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'screen';
+      ctx.filter = `blur(${BLOOM_SOFT_BLUR}px)`;
+      ctx.globalAlpha = BLOOM_SOFT_ALPHA;
+      ctx.drawImage(canvas, 0, 0);
+
+      ctx.filter = `blur(${BLOOM_CORE_BLUR}px)`;
+      ctx.globalAlpha = BLOOM_CORE_ALPHA;
+      ctx.drawImage(canvas, 0, 0);
+      ctx.restore();
+    }
+  }
+
+  function drawUI(ctx, cw, ch) {
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    drawCoinCounter(ctx, cw, ch);
+    drawCommandDeck(ctx, cw, ch);
+    drawHPGauge(ctx, cw, ch);
+    drawCombo(ctx, cw, ch);
+    drawTargetHP(ctx, cw, ch);
+    if (gameOver) {
+      drawGameOver(ctx, cw, ch);
+    }
+    ctx.restore();
+  }
+
+  function loop() {
+    stageTime++;
+    const cw = canvas.width;
+    const ch = canvas.height;
+    const frozen = hitStop > 0;
+    fxBudget = FX_FRAME_BUDGET;
+    if (hitStop > 0) hitStop--;
+    pollGamepad();
+    updateBgmFade();
+    if (gameOver) gameOverTimer++;
+    let simStep = true;
+    if (deathSequence && !gameOver) {
+      deathTimer++;
+      const slowStep = deathTimer < 20 ? 1 : (deathTimer < 60 ? 2 : 3);
+      simStep = stageTime % slowStep === 0;
+      if (deathTimer > 90) {
+        gameOver = true;
+        gameOverTimer = 0;
+        deathSequence = false;
+      }
+    }
+
+    if (restartQueued) {
+      if (gameOver) resetGame();
+      restartQueued = false;
+    }
+    if (rumbleToggleQueued) {
+      toggleRumbleTest();
+      rumbleToggleQueued = false;
+    }
+    if (rumbleStrengthQueued) {
+      bumpRumbleStrength();
+      rumbleStrengthQueued = false;
+      rumbleTestClock = 0;
+    }
+    if (rumblePatternQueued) {
+      cycleRumblePattern();
+      rumblePatternQueued = false;
+    }
+
+    if (!gameOver && !frozen && simStep) {
+      if (lockQueued && !player.counterActive) toggleLockOn();
+      updateLockTargets();
+      player.update(platforms);
+      if (!deathSequence) updateGimmicks();
+      if (!deathSequence) updateCounterAttack();
+      if (lockOnActive && lockOnTarget && !player.counterActive) {
+        player.facing = lockOnTarget.x >= player.x ? 1 : -1;
+      }
+      if (!deathSequence && !player.counterActive) {
+        if (basicQueued) tryBasicAttack();
+        if (actionQueued) tryUseCommand();
+        if (rotateQueued !== 0 && commandRotateFrames <= 0) {
+          const dir = rotateQueued > 0 ? 1 : -1;
+          triggerDeckRotate(dir);
+          rotateQueued += dir > 0 ? -1 : 1;
+        }
+        if (dodgeQueued) {
+          const inputLeft = keys.Left || gpKeys.Left;
+          const inputRight = keys.Right || gpKeys.Right;
+          if (!inputLeft && !inputRight && player.onGround) {
+            tryGuard();
+          } else {
+            const dir = inputLeft ? -1 : (inputRight ? 1 : player.facing);
+            tryDodge(dir);
+          }
+        }
+        if (basicChainQueued && player.attackTimer <= 3 && basicComboTimer > 0 && basicComboStep > 0 && basicComboStep < BASIC_COMBO_MAX && basicComboCooldown <= 0) {
+          basicChainQueued = false;
+          spawnBasicAttack();
+        }
+      }
+    }
+    actionQueued = false;
+    // rotateQueued is a queue; do not clear here.
+    dodgeQueued = false;
+    lockQueued = false;
+    basicQueued = false;
+
+    if (!frozen && simStep) updateCommandDeck();
+    if (!gameOver && !frozen && simStep) {
+      updateEnemies();
+      updateLockTargets();
+      updateAttacks();
+      updateCoins();
+      checkEnemyContact();
+    }
+    if (!frozen && simStep) updateEffects();
+    if (!frozen && simStep) {
+      updateHpDisplay(player, 0.26, 0.06, 12);
+      for (let e of enemies) updateHpDisplay(e, 0.22, 0.05, 10);
+      hpUiPulse = Math.max(0, hpUiPulse - 0.03);
+      coinPulse = Math.max(0, coinPulse - 0.04);
+      if (hpUiShake > 0) hpUiShake--;
+    }
+    if (player.invuln > 0 && !frozen && simStep) player.invuln--;
+    if (!frozen && simStep) {
+      if (comboTimer > 0) comboTimer--;
+      else comboCount = 0;
+      if (slashComboTimer > 0) slashComboTimer--;
+      else slashComboStep = 0;
+      if (basicComboTimer > 0) basicComboTimer--;
+      else basicComboStep = 0;
+      if (basicComboCooldown > 0) basicComboCooldown--;
+      if (playerOffenseTimer > 0) playerOffenseTimer--;
+      if (player.guardSuccessTimer > 0) player.guardSuccessTimer--;
+    }
+
+    updateRumbleTest();
+
+    // カメラの滑らかな追従（プレイヤーを画面中央付近に捉えるように）
+    // プレイヤーが画面の中心より右にいる時だけスクロールさせる（左端にいるときは固定）
+    let targetCamX = player.x - cw / 2.5;
+    if (lockOnActive && lockOnTarget) {
+      const midX = (player.x + lockOnTarget.x) * 0.5;
+      targetCamX = midX - cw / 2.5;
+    }
+    if (targetCamX < 0) targetCamX = 0; // 左端の制限
+
+    cameraX += (targetCamX - cameraX) * 0.1;
+
+    let shakeX = 0;
+    let shakeY = 0;
+    if (screenShake > 0) {
+      shakeX = (Math.random() - 0.5) * screenShake;
+      shakeY = (Math.random() - 0.5) * screenShake * 0.4;
+      screenShake *= 0.88;
+    }
+
+    // 背景のパララックス描画
+    drawBackground(ctx, cameraX, cw, ch);
+
+    // --- カメラ位置を適用して地形やキャラクターを描画 ---
+    ctx.save();
+    ctx.translate(-cameraX + shakeX, shakeY);
+
+    // 地形（地面）の描画
+    drawTerrain(ctx, cameraX, cw, ch);
+
+    // ギミックの描画
+    drawGimmicks(ctx, cameraX, cw);
+
+    // 足場の描画
+    platforms.forEach(p => {
+      if (p.ground) return;
+      // 画面内に見えている足場だけを描画する最適化
+      if (p.x + p.w < cameraX || p.x > cameraX + cw) return;
+
+      const visStart = Math.max(p.x, cameraX - 80);
+      const visEnd = Math.min(p.x + p.w, cameraX + cw + 80);
+
+      // 段差足場（石造り）
+      const platGrad = ctx.createLinearGradient(0, p.y, 0, p.y + p.h);
+      platGrad.addColorStop(0, '#f6e6cc');
+      platGrad.addColorStop(1, '#c9b08f');
+      ctx.fillStyle = platGrad;
+      ctx.fillRect(p.x, p.y, p.w, p.h);
+
+      ctx.fillStyle = 'rgba(120, 90, 60, 0.35)';
+      ctx.fillRect(p.x, p.y + p.h - 8, p.w, 8);
+
+      ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+      ctx.lineWidth = 1;
+      for (let px = Math.floor(visStart / 40) * 40; px < visEnd; px += 40) {
+        ctx.beginPath();
+        ctx.moveTo(px, p.y + 6);
+        ctx.lineTo(px + 20, p.y + p.h - 6);
+        ctx.stroke();
+      }
+    });
+
+    // コイン
+    drawCoins(ctx, cameraX, cw);
+
+    // 敵
+    for (let e of enemies) {
+      if (e.x + e.width < cameraX || e.x - e.width > cameraX + cw) continue;
+      e.draw(ctx);
+    }
+
+    // ロックオン表示
+    drawLockOn(ctx);
+
+    // プレイヤー
+    player.draw(ctx);
+
+    // エフェクト（前面）
+    drawEffects(ctx);
+
+    ctx.restore();
+
+    drawDeathOverlay(ctx, cw, ch);
+    applyPostEffects();
+    drawUI(ctx, cw, ch);
+
+    if (screenFlash > 0) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'screen';
+      ctx.fillStyle = `rgba(255,255,255,${screenFlash})`;
+      ctx.fillRect(0, 0, cw, ch);
+      ctx.restore();
+      screenFlash = Math.max(0, screenFlash - 0.08);
+    }
+
+    requestAnimationFrame(loop);
+  }
+
+  loop();
+</script>
+
+</body>
+</html>

@@ -1,0 +1,1057 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D 8bit プリンホラー - 恐怖の覚醒</title>
+    <!-- 8bit風の日本語フォントを読み込み -->
+    <link href="https://fonts.googleapis.com/css2?family=DotGothic16&display=swap" rel="stylesheet">
+    <style>
+        body { margin: 0; background-color: #000; overflow: hidden; color: #fff; font-family: 'DotGothic16', sans-serif; user-select: none; }
+        canvas { display: block; width: 100vw; height: 100vh; image-rendering: pixelated; }
+        #ui { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; pointer-events: none; text-align: center; z-index: 10; }
+        .panel { background: rgba(5, 5, 10, 0.9); padding: 50px; border: 2px solid #333; box-shadow: 0 0 50px rgba(255, 0, 0, 0.3), inset 0 0 20px #000; pointer-events: auto; backdrop-filter: blur(10px); transition: all 1s; }
+        h1 { font-size: 4rem; color: #e00; text-shadow: 2px 2px 0 #300, -2px -2px 0 #500, 0 0 20px #f00; margin: 0 0 20px 0; letter-spacing: 5px; }
+        p { font-size: 1.2rem; margin-bottom: 30px; color: #aaa; line-height: 1.8; text-shadow: 1px 1px 0 #000; }
+        button { font-family: 'DotGothic16', sans-serif; font-size: 1.5rem; padding: 15px 40px; background: #111; color: #f00; border: 2px solid #a00; cursor: pointer; transition: all 0.2s; text-transform: uppercase; letter-spacing: 2px; box-shadow: 0 0 10px rgba(255,0,0,0.2); }
+        button:hover { background: #500; color: #fff; box-shadow: 0 0 30px #f00; border-color: #f00; transform: scale(1.05); }
+        .hidden { display: none !important; opacity: 0; pointer-events: none; }
+        
+        #bloodScreen { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; background: radial-gradient(circle, rgba(255,0,0,0) 30%, rgba(150,0,0,0.8) 100%); opacity: 0; pointer-events: none; transition: opacity 0.2s; z-index: 5; mix-blend-mode: multiply; }
+        #vignette { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; background: radial-gradient(circle, rgba(0,0,0,0) 40%, rgba(0,0,0,0.9) 100%); pointer-events: none; z-index: 4; }
+        
+        /* 画面グリッチエフェクト */
+        .glitch { animation: glitch-skew 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94) both infinite; }
+        @keyframes glitch-skew {
+            0% { transform: skew(0deg); }
+            20% { transform: skew(-20deg); filter: hue-rotate(90deg); }
+            40% { transform: skew(20deg); filter: hue-rotate(-90deg); }
+            60% { transform: skew(0deg); opacity: 0.8; }
+            80% { transform: skew(5deg); }
+            100% { transform: skew(0deg); }
+        }
+    </style>
+</head>
+<body>
+    <div id="vignette"></div>
+    <div id="bloodScreen"></div>
+    <canvas id="gameCanvas"></canvas>
+
+    <div id="ui">
+        <div id="startScreen" class="panel">
+            <h1>プリン・ザ・ブラッド</h1>
+            <p>W, A, S, Dキー で移動<br>深夜の住宅街。<br>圧倒的で不条理な「甘い狂気」から逃げ延びろ。</p>
+            <button id="startBtn">悪夢を始める</button>
+        </div>
+        <div id="gameOverScreen" class="panel hidden">
+            <h1>YOU DIED</h1>
+            <p>消化された......</p>
+            <button id="restartBtn">もう一度ループする</button>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const shadowCanvas = document.createElement('canvas');
+        const sCtx = shadowCanvas.getContext('2d');
+        const bloodScreen = document.getElementById('bloodScreen');
+
+        // ==== 音響システム (Web Audio API) ====
+        let audioCtx;
+        function initAudio() {
+            if(!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if(audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+        }
+        
+        function playScreech() {
+            if(!audioCtx) return;
+            // 複数のオシレーターで不協和音の絶叫を作成
+            [200, 350, 500].forEach((freq, i) => {
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.type = i % 2 === 0 ? 'sawtooth' : 'square';
+                osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(freq * 3, audioCtx.currentTime + 0.1);
+                osc.frequency.exponentialRampToValueAtTime(50, audioCtx.currentTime + 2.0);
+                
+                gain.gain.setValueAtTime(0, audioCtx.currentTime);
+                gain.gain.linearRampToValueAtTime(0.3, audioCtx.currentTime + 0.05);
+                gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 2.0);
+                
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 2.0);
+            });
+        }
+
+        function playHeartbeat(speed) {
+            if(!audioCtx) return;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(40, audioCtx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(20, audioCtx.currentTime + 0.2);
+            gain.gain.setValueAtTime(0, audioCtx.currentTime);
+            gain.gain.linearRampToValueAtTime(0.8, audioCtx.currentTime + 0.02);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.3);
+        }
+
+        // ==== 描画・スケール ====
+        const PIXEL_SCALE = 2; 
+
+        function resize() {
+            canvas.width = Math.floor(window.innerWidth / PIXEL_SCALE);
+            canvas.height = Math.floor(window.innerHeight / PIXEL_SCALE);
+            shadowCanvas.width = canvas.width;
+            shadowCanvas.height = canvas.height;
+            ctx.imageSmoothingEnabled = false;
+            sCtx.imageSmoothingEnabled = false;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        // 俯瞰用パラメータ
+        const isoAngle = Math.PI / 6; 
+        const cosA = Math.cos(isoAngle);
+        const sinA = Math.sin(isoAngle);
+
+        function isoScale(x, y, z) {
+            return {
+                sx: (x - y) * cosA,
+                sy: (x + y) * sinA - z
+            };
+        }
+
+        // ==== 状態管理 ====
+        let gameState = 'start'; // start, play, death, gameover
+        let lastTime = 0;
+        let animationFrameId;
+        
+        let screenShake = 0;
+        let deathTimer = 0;
+        let pBreatheTimer = 0;
+
+        const keys = { w: false, a: false, s: false, d: false };
+        window.addEventListener('keydown', e => {
+            const k = e.key.toLowerCase();
+            if (keys.hasOwnProperty(k)) keys[k] = true;
+        });
+        window.addEventListener('keyup', e => {
+            const k = e.key.toLowerCase();
+            if (keys.hasOwnProperty(k)) keys[k] = false;
+        });
+
+        document.getElementById('startBtn').onclick = () => { initAudio(); startGame(); };
+        document.getElementById('restartBtn').onclick = startGame;
+
+        let player, pudding, entities, lights, particles, trails, fog;
+        let playerBreadcrumbs = [];
+        const MAP_SIZE = 1600;
+        const BLOCK_SIZE = 360;
+        const ROAD_W = 140;
+
+        // カメラ（遅延追従用）
+        let camTargetX = 0, camTargetY = 0;
+        let camCurrentX = 0, camCurrentY = 0;
+
+        function startGame() {
+            document.getElementById('startScreen').classList.add('hidden');
+            document.getElementById('gameOverScreen').classList.add('hidden');
+            document.body.classList.remove('glitch');
+            bloodScreen.style.opacity = '0';
+            screenShake = 0;
+            deathTimer = 0;
+
+            player = { x: ROAD_W / 2, y: ROAD_W / 2, radius: 10, speed: 180 };
+            
+            // プリン
+            // 見た目の巨大さや存在感は維持しつつ、当たり判定（hitRadius）を極小化！
+            // はまって閉じ込められないよう、道の中央の安定した地点にスポーンさせる
+            pudding = { x: MAP_SIZE - ROAD_W / 2, y: MAP_SIZE - ROAD_W / 2, visualRadius: 28, hitRadius: 8, speed: 125, hoverY: 0 };
+
+            playerBreadcrumbs = [];
+            particles = [];
+            entities = [];
+            lights = [];
+            trails = [];
+            fog = [];
+
+            // 霧の生成
+            for(let i=0; i<40; i++) {
+                fog.push({
+                    x: Math.random() * MAP_SIZE, y: Math.random() * MAP_SIZE,
+                    vx: 10 + Math.random() * 20, vy: 5 + Math.random() * 10,
+                    size: 150 + Math.random() * 200, alpha: 0.05 + Math.random() * 0.05
+                });
+            }
+
+            buildMap();
+            
+            // カメラの初期位置を同期
+            const pIso = isoScale(player.x, player.y, 0);
+            camCurrentX = pIso.sx;
+            camCurrentY = pIso.sy;
+
+            gameState = 'play';
+            lastTime = performance.now();
+            cancelAnimationFrame(animationFrameId);
+            gameLoop(lastTime);
+        }
+
+        function addLight(x, y, z, r, a, rgb, flicker = false) {
+            lights.push({ x, y, z, r, a, rgb: rgb || '255,255,255', flicker, baseA: a });
+        }
+
+        function buildMap() {
+            for (let x = ROAD_W; x < MAP_SIZE; x += BLOCK_SIZE + ROAD_W) {
+                for (let y = ROAD_W; y < MAP_SIZE; y += BLOCK_SIZE + ROAD_W) {
+                    
+                    entities.push({ type: 'flat', x: x, y: y, w: BLOCK_SIZE, d: BLOCK_SIZE, color: '#2a2d30' });
+
+                    // 交差点の横断歩道（ゼブラ模様）
+                    for(let i=0; i<4; i++) {
+                        entities.push({ type: 'flat', x: x - ROAD_W + 20, y: y - ROAD_W + 20 + i * 25, w: ROAD_W - 40, d: 12, color: '#6a6d75' });
+                        entities.push({ type: 'flat', x: x - ROAD_W + 20 + i * 25, y: y - 30, w: 12, d: 20, color: '#6a6d75' });
+                    }
+
+                    const wallThick = 15;
+                    const wallH = 25;
+                    const piece = 40;
+                    
+                    for (let wx = x; wx < x + BLOCK_SIZE; wx += piece) {
+                        // 玄関用の隙間（プレイヤーがブロック内へ逃げ込めるように）
+                        if (wx > x + BLOCK_SIZE / 2 - 30 && wx < x + BLOCK_SIZE / 2 + 30) continue;
+                        let w = Math.min(piece, x + BLOCK_SIZE - wx);
+                        entities.push({ type: 'wall', x: wx, y: y, w: w, d: wallThick, h: wallH });
+                        entities.push({ type: 'wall', x: wx, y: y + BLOCK_SIZE - wallThick, w: w, d: wallThick, h: wallH });
+                    }
+                    for (let wy = y + wallThick; wy < y + BLOCK_SIZE - wallThick; wy += piece) {
+                        // 横側の隙間
+                        if (wy > y + BLOCK_SIZE / 2 - 30 && wy < y + BLOCK_SIZE / 2 + 30) continue;
+                        let d = Math.min(piece, (y + BLOCK_SIZE - wallThick) - wy);
+                        entities.push({ type: 'wall', x: x, y: wy, w: wallThick, d: d, h: wallH });
+                        entities.push({ type: 'wall', x: x + BLOCK_SIZE - wallThick, y: wy, w: wallThick, d: d, h: wallH });
+                    }
+
+                    // 家の生成（バリエーション追加）
+                    const colors = [
+                        {b:'#b8b2a8',l:'#a09b93',r:'#403d39'}, 
+                        {b:'#9ea7af',l:'#8d969e',r:'#333940'}, 
+                        {b:'#c3a1a1',l:'#a38181',r:'#3a2626'}, 
+                        {b:'#a1c3b1',l:'#83a393',r:'#2a3a31'}
+                    ];
+                    
+                    const h1Color = colors[Math.floor(Math.random() * colors.length)];
+                    const hSizeX = 120 + Math.random() * 60;
+                    const hSizeY = 120 + Math.random() * 60;
+                    const h1On = Math.random() > 0.3; // 電気がついているか
+                    const h1 = { x: x + 40, y: y + 40, w: hSizeX, d: hSizeY, h: 100 + Math.random() * 30, colors: h1Color, lightOn: h1On };
+                    entities.push({ type: 'house', ...h1 });
+                    if(h1On) addLight(h1.x + h1.w, h1.y + h1.d / 2, 40, 180, 0.4, '255,230,150');
+
+                    const h2Color = colors[Math.floor(Math.random() * colors.length)];
+                    const h2On = Math.random() > 0.5;
+                    const h2 = { x: x + BLOCK_SIZE - 180, y: y + BLOCK_SIZE - 170, w: 140, d: 130, h: 120, colors: h2Color, lightOn: h2On };
+                    entities.push({ type: 'house', ...h2 });
+                    if(h2On) addLight(h2.x + h2.w / 2, h2.y + h2.d, 40, 180, 0.4, '255,240,180');
+
+                    // 庭の木・茂み
+                    if (Math.random() > 0.3) {
+                        entities.push({ type: 'tree', x: x + 25, y: y + BLOCK_SIZE - 60, w: 30, d: 30, h: 60 });
+                        entities.push({ type: 'tree', x: x + BLOCK_SIZE - 60, y: y + 25, w: 30, d: 30, h: 50 });
+                    }
+
+                    entities.push({ type: 'pole', x: x - 15, y: y - 15 });
+                    // ランダムでチラつく街灯 (光のサイズを控えめに・自然に調整)
+                    addLight(x - 15, y - 15, 110, 90, 0.8, '200,225,255', Math.random() > 0.7); 
+                    
+                    entities.push({ type: 'pole', x: x + BLOCK_SIZE + 15, y: y + BLOCK_SIZE + 15 });
+                    addLight(x + BLOCK_SIZE + 15, y + BLOCK_SIZE + 15, 110, 90, 0.8, '200,225,255');
+
+                    if ((Math.floor(x + y)) % 3 === 0) {
+                        entities.push({ type: 'vending', x: x + 60, y: y + BLOCK_SIZE + wallThick, w: 40, d: 20, h: 60 });
+                        // 自販機（点滅させない、光のサイズも調整）
+                        addLight(x + 80, y + BLOCK_SIZE + wallThick + 10, 25, 120, 0.8, '160,220,255', false);
+                    }
+                }
+            }
+        }
+
+        function checkCollision(px, py, radius) {
+            if (px - radius < 0 || px + radius > MAP_SIZE || py - radius < 0 || py + radius > MAP_SIZE) return true;
+            for (let e of entities) {
+                if (e.type === 'wall' || e.type === 'house' || e.type === 'vending') {
+                    if (px + radius > e.x && px - radius < e.x + e.w &&
+                        py + radius > e.y && py - radius < e.y + e.d) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        // ================= 怒涛のゲームオーバー（死の演出）遷移 =================
+        function triggerDeathSequence() {
+            gameState = 'death';
+            playScreech();
+            screenShake = 60; // 激しい揺れ
+            document.body.classList.add('glitch'); // 画面全体が定期的に歪む
+            
+            // 四方八方に凄まじい量の血が吹き出す
+            for (let i = 0; i < 300; i++) {
+                particles.push({
+                    x: player.x,
+                    y: player.y,
+                    z: 10 + Math.random() * 20,
+                    vx: (Math.random() - 0.5) * 600,
+                    vy: (Math.random() - 0.5) * 600,
+                    vz: 100 + Math.random() * 400,
+                    life: 2.0 + Math.random() * 2.0,
+                    size: 2 + Math.random() * 8, // 大きな血糊
+                    type: 'blood'
+                });
+            }
+        }
+
+        // ================= 各種3D・ドロー関数 =================
+        function drawIsoFlatRect(ctx, bx, by, bw, bd, color) {
+            const p0 = isoScale(bx, by, 0);
+            const p1 = isoScale(bx + bw, by, 0);
+            const p2 = isoScale(bx + bw, by + bd, 0);
+            const p3 = isoScale(bx, by + bd, 0);
+            ctx.fillStyle = color;
+            ctx.beginPath(); ctx.moveTo(p0.sx, p0.sy); ctx.lineTo(p1.sx, p1.sy); ctx.lineTo(p2.sx, p2.sy); ctx.lineTo(p3.sx, p3.sy); ctx.closePath(); ctx.fill();
+        }
+
+        function drawIsoBlock(ctx, bx, by, bw, bd, bz, bh, colorLeftScreen, colorRightScreen, colorTop) {
+            const p0 = isoScale(bx, by, bz); const p1 = isoScale(bx+bw, by, bz); const p2 = isoScale(bx+bw, by+bd, bz); const p3 = isoScale(bx, by+bd, bz);
+            const t0 = isoScale(bx, by, bz+bh); const t1 = isoScale(bx+bw, by, bz+bh); const t2 = isoScale(bx+bw, by+bd, bz+bh); const t3 = isoScale(bx, by+bd, bz+bh);
+
+            // Left
+            ctx.fillStyle = colorLeftScreen;
+            ctx.beginPath(); ctx.moveTo(p3.sx, p3.sy); ctx.lineTo(p2.sx, p2.sy); ctx.lineTo(t2.sx, t2.sy); ctx.lineTo(t3.sx, t3.sy); ctx.closePath(); ctx.fill();
+            // Right
+            ctx.fillStyle = colorRightScreen;
+            ctx.beginPath(); ctx.moveTo(p1.sx, p1.sy); ctx.lineTo(p2.sx, p2.sy); ctx.lineTo(t2.sx, t2.sy); ctx.lineTo(t1.sx, t1.sy); ctx.closePath(); ctx.fill();
+            // Top
+            ctx.fillStyle = colorTop;
+            ctx.beginPath(); ctx.moveTo(t0.sx, t0.sy); ctx.lineTo(t1.sx, t1.sy); ctx.lineTo(t2.sx, t2.sy); ctx.lineTo(t3.sx, t3.sy); ctx.closePath(); ctx.fill();
+
+            // エッジ
+            ctx.strokeStyle = '#0f1013'; ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.moveTo(t3.sx, t3.sy); ctx.lineTo(t2.sx, t2.sy); ctx.lineTo(t1.sx, t1.sy); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(p2.sx, p2.sy); ctx.lineTo(t2.sx, t2.sy); ctx.stroke();
+        }
+
+        function drawWindowLeftScreen(ctx, bx, by, bw, bd, woff, ww, wz, wh, color) {
+            const w3 = isoScale(bx+woff, by+bd, wz); const w2 = isoScale(bx+woff+ww, by+bd, wz);
+            const tw2 = isoScale(bx+woff+ww, by+bd, wz+wh); const tw3 = isoScale(bx+woff, by+bd, wz+wh);
+            ctx.fillStyle = color;
+            ctx.beginPath(); ctx.moveTo(w3.sx, w3.sy); ctx.lineTo(w2.sx, w2.sy); ctx.lineTo(tw2.sx, tw2.sy); ctx.lineTo(tw3.sx, tw3.sy); ctx.fill();
+        }
+
+        function drawWindowRightScreen(ctx, bx, by, bw, bd, woff, ww, wz, wh, color) {
+            const w1 = isoScale(bx+bw, by+woff, wz); const w2 = isoScale(bx+bw, by+woff+ww, wz);
+            const tw2 = isoScale(bx+bw, by+woff+ww, wz+wh); const tw1 = isoScale(bx+bw, by+woff, wz+wh);
+            ctx.fillStyle = color;
+            ctx.beginPath(); ctx.moveTo(w1.sx, w1.sy); ctx.lineTo(w2.sx, w2.sy); ctx.lineTo(tw2.sx, tw2.sy); ctx.lineTo(tw1.sx, tw1.sy); ctx.fill();
+        }
+
+
+        // ================= メインループ =================
+        function gameLoop(time) {
+            let dt = Math.min((time - lastTime) / 1000, 0.1);
+            lastTime = time;
+            pBreatheTimer += dt;
+
+            // --- プレイ中のロジック ---
+            if (gameState === 'play') {
+                let dx = 0, dy = 0;
+                if (keys.w) { dx -= 1; dy -= 1; }
+                if (keys.s) { dx += 1; dy += 1; }
+                if (keys.a) { dx -= 1; dy += 1; }
+                if (keys.d) { dx += 1; dy -= 1; }
+
+                let length = Math.sqrt(dx * dx + dy * dy);
+                if (length > 0) {
+                    dx /= length; dy /= length;
+                    player.facingX = dx;
+                    player.facingY = dy;
+                    player.isMoving = true;
+                    
+                    // 足跡/軌跡を残す
+                    if(Math.random() < 0.2) {
+                        trails.push({ x: player.x, y: player.y, life: 3.0, type: 'player' });
+                    }
+
+                    if (playerBreadcrumbs.length === 0) {
+                        playerBreadcrumbs.push({x: player.x, y: player.y});
+                    } else {
+                        const lastBc = playerBreadcrumbs[playerBreadcrumbs.length - 1];
+                        if ((player.x - lastBc.x)**2 + (player.y - lastBc.y)**2 > 900) {
+                            playerBreadcrumbs.push({x: player.x, y: player.y});
+                            if (playerBreadcrumbs.length > 200) playerBreadcrumbs.shift();
+                        }
+                    }
+                } else {
+                    player.isMoving = false;
+                }
+
+                let nx = player.x + dx * player.speed * dt;
+                if (!checkCollision(nx, player.y, player.radius)) player.x = nx;
+                let ny = player.y + dy * player.speed * dt;
+                if (!checkCollision(player.x, ny, player.radius)) player.y = ny;
+
+                // プリンの追跡（スマートなルート検索でスタック回避）
+                let targetX = player.x;
+                let targetY = player.y;
+                let realDist = Math.sqrt((player.x - pudding.x)**2 + (player.y - pudding.y)**2);
+
+                function clearLineOfSight(x1, y1, x2, y2) {
+                    let dx = x2 - x1, dy = y2 - y1;
+                    let d = Math.sqrt(dx*dx + dy*dy);
+                    let steps = Math.ceil(d / 15);
+                    for (let i = 1; i < steps; i++) {
+                        if (checkCollision(x1 + dx * i / steps, y1 + dy * i / steps, 8)) return false;
+                    }
+                    return true;
+                }
+
+                if (!clearLineOfSight(pudding.x, pudding.y, player.x, player.y) && playerBreadcrumbs.length > 0) {
+                    let targetBc = null;
+                    for (let i = playerBreadcrumbs.length - 1; i >= 0; i--) {
+                        if (clearLineOfSight(pudding.x, pudding.y, playerBreadcrumbs[i].x, playerBreadcrumbs[i].y)) {
+                            targetBc = i < playerBreadcrumbs.length - 1 ? playerBreadcrumbs[i + 1] : playerBreadcrumbs[i];
+                            break;
+                        }
+                    }
+                    if (targetBc) {
+                        targetX = targetBc.x;
+                        targetY = targetBc.y;
+                    } else {
+                        let minDist = Infinity;
+                        for (let bc of playerBreadcrumbs) {
+                            let dSq = (pudding.x - bc.x)**2 + (pudding.y - bc.y)**2;
+                            if (dSq < minDist) { minDist = dSq; targetX = bc.x; targetY = bc.y; }
+                        }
+                    }
+                }
+
+                const pdx = targetX - pudding.x;
+                const pdy = targetY - pudding.y;
+                const distToTarget = Math.sqrt(pdx * pdx + pdy * pdy);
+
+                if (distToTarget > 0) {
+                    let moveX = (pdx / distToTarget) * pudding.speed * dt;
+                    let moveY = (pdy / distToTarget) * pudding.speed * dt;
+                    
+                    let pnx = pudding.x + moveX;
+                    let canX = !checkCollision(pnx, pudding.y, 10);
+                    if (canX) pudding.x = pnx;
+                    
+                    let pny = pudding.y + moveY;
+                    let canY = !checkCollision(pudding.x, pny, 10);
+                    if (canY) pudding.y = pny;
+
+                    if (!canX && Math.abs(moveY) < pudding.speed * dt * 0.2) {
+                        pudding.slideDir = pudding.slideDir || (Math.random() > 0.5 ? 1 : -1);
+                        let sy = pudding.slideDir * pudding.speed * dt * 0.9;
+                        if (!checkCollision(pudding.x, pudding.y + sy, 10)) pudding.y += sy;
+                        else pudding.slideDir *= -1;
+                    } 
+                    else if (!canY && Math.abs(moveX) < pudding.speed * dt * 0.2) {
+                        pudding.slideDir = pudding.slideDir || (Math.random() > 0.5 ? 1 : -1);
+                        let sx = pudding.slideDir * pudding.speed * dt * 0.9;
+                        if (!checkCollision(pudding.x + sx, pudding.y, 10)) pudding.x += sx;
+                        else pudding.slideDir *= -1;
+                    }
+                    else if (canX || canY) {
+                        if (Math.random() < 0.05) pudding.slideDir = Math.random() > 0.5 ? 1 : -1;
+                    }
+                }
+                
+                // プリンが床を這いずる不気味な軌跡
+                if(Math.random() < 0.3) {
+                    trails.push({ x: pudding.x + (Math.random()-0.5)*15, y: pudding.y + (Math.random()-0.5)*15, life: 10.0, type: 'pudding' });
+                }
+
+                // *** 新しい当たり判定 ***
+                if (realDist < player.radius + pudding.hitRadius) {
+                    triggerDeathSequence();
+                }
+
+                // 恐怖演出：近づくと心拍サウンドと画面の赤み
+                bloodScreen.style.opacity = Math.max(0, 1 - (realDist / 400));
+                
+                // 心拍音エフェクト (一定距離以内)
+                if(realDist < 500) {
+                    const beatInterval = Math.max(0.2, (realDist / 500) * 1.0); // 近いほど速い
+                    if(pBreatheTimer > beatInterval) {
+                        playHeartbeat();
+                        pBreatheTimer = 0;
+                        // 心拍に合わせて画面が一瞬だけ揺れる
+                        if(Math.random() > 0.5) screenShake += 3;
+                    }
+                }
+            } 
+            // --- 死亡演出中のロジック ---
+            else if (gameState === 'death') {
+                deathTimer += dt;
+                bloodScreen.style.opacity = '1';
+                
+                // プリンが死体に乗りかかって巨大化する（ジャンプスケア的）
+                pudding.x += (player.x - pudding.x) * 10 * dt;
+                pudding.y += (player.y - pudding.y) * 10 * dt;
+                pudding.visualRadius += 200 * dt; // 尋常じゃない速度で膨れ上がる
+                pudding.hoverY += 50 * dt; // 上に覆い被さってくる
+
+                if(deathTimer > 3.0) {
+                    gameState = 'gameover';
+                    document.getElementById('gameOverScreen').classList.remove('hidden');
+                }
+            }
+
+            // --- 汎用アップデート ---
+            // カメラの遅延追従（スムーズな動きで不安感を煽る）
+            const targetIso = isoScale(player.x, player.y, 0);
+            camCurrentX += (targetIso.sx - camCurrentX) * 5 * dt;
+            camCurrentY += (targetIso.sy - camCurrentY) * 5 * dt;
+
+            // 画面揺れ
+            if (screenShake > 0) {
+                camCurrentX += (Math.random() - 0.5) * screenShake;
+                camCurrentY += (Math.random() - 0.5) * screenShake;
+                screenShake *= 0.9; // 減衰
+            }
+
+            // パーティクル（物理と重力）
+            for (let p of particles) {
+                p.x += p.vx * dt;
+                p.y += p.vy * dt;
+                p.z += p.vz * dt;
+                p.vz -= 800 * dt; // 重力
+                if(p.z < 0) {
+                    p.z = 0;
+                    p.vx *= 0.5; // 床に落ちたら摩擦で止まる
+                    p.vy *= 0.5;
+                    p.vz *= -0.3; // 跳ね返り
+                }
+                p.life -= dt;
+            }
+            particles = particles.filter(p => p.life > 0);
+
+            // 軌跡
+            for(let t of trails) t.life -= dt;
+            trails = trails.filter(t => t.life > 0);
+
+            // 霧
+            for(let f of fog) {
+                f.x += f.vx * dt;
+                f.y += f.vy * dt;
+                if(f.x > MAP_SIZE + 200) f.x = -200;
+                if(f.y > MAP_SIZE + 200) f.y = -200;
+            }
+
+            // ================= 描画処理 =================
+            const camX = camCurrentX - canvas.width / 2;
+            const camY = camCurrentY - canvas.height / 2;
+
+            ctx.fillStyle = '#15171a';  // より暗く冷たいアスファルトの色
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            ctx.save();
+            ctx.translate(-camX, -camY);
+
+            // レンダリング用リスト
+            const renderItems = [];
+            
+            // フラットなオブジェクト（軌跡や地形）は先に描く
+            for (let e of entities) {
+                if (e.type === 'flat') renderItems.push({ type: 'flat', obj: e, depth: -10000 });
+            }
+            for(let t of trails) {
+                renderItems.push({ type: 'trail', obj: t, depth: -5000 });
+            }
+
+            // プレイヤー（死亡時は描画しないことで食べられた感を出す）
+            if(gameState !== 'gameover' && gameState !== 'death') {
+                renderItems.push({ type: 'player', obj: player, depth: player.x + player.y });
+            }
+            // プリン
+            renderItems.push({ type: 'pudding', obj: pudding, depth: pudding.x + pudding.y });
+            
+            for (let e of entities) {
+                if (e.type !== 'flat') {
+                    let ew = e.w || 0; let ed = e.d || 0;
+                    renderItems.push({ type: e.type, obj: e, depth: e.x + (ew / 2) + e.y + (ed / 2) });
+                }
+            }
+            for (let p of particles) {
+                renderItems.push({ type: 'particle', obj: p, depth: p.x + p.y });
+            }
+
+            renderItems.sort((a, b) => a.depth - b.depth);
+
+            // センターライン
+            ctx.strokeStyle = '#2a3038';
+            ctx.lineWidth = 4;
+            ctx.setLineDash([20, 20]);
+            for (let x = ROAD_W + BLOCK_SIZE/2; x < MAP_SIZE; x += BLOCK_SIZE + ROAD_W) {
+                const s = isoScale(x, 0, 0); const e = isoScale(x, MAP_SIZE, 0);
+                ctx.beginPath(); ctx.moveTo(s.sx, s.sy); ctx.lineTo(e.sx, e.sy); ctx.stroke();
+            }
+            for (let y = ROAD_W + BLOCK_SIZE/2; y < MAP_SIZE; y += BLOCK_SIZE + ROAD_W) {
+                const s = isoScale(0, y, 0); const e = isoScale(MAP_SIZE, y, 0);
+                ctx.beginPath(); ctx.moveTo(s.sx, s.sy); ctx.lineTo(e.sx, e.sy); ctx.stroke();
+            }
+            ctx.setLineDash([]);
+
+            // アイテム描画ループ
+            for (let item of renderItems) {
+                const e = item.obj;
+                if (item.type === 'flat') {
+                    drawIsoFlatRect(ctx, e.x, e.y, e.w, e.d, e.color);
+                } 
+                else if(item.type === 'trail') {
+                    const origin = isoScale(e.x, e.y, 0);
+                    ctx.fillStyle = e.type === 'player' ? `rgba(0,0,0,${0.2 * e.life/3.0})` : `rgba(40,0,0,${0.8 * e.life/10.0})`;
+                    ctx.beginPath(); ctx.ellipse(origin.sx, origin.sy, e.type==='player'?5:15, e.type==='player'?2:7, 0, 0, Math.PI*2); ctx.fill();
+                }
+                else if (item.type === 'wall') {
+                    drawIsoBlock(ctx, e.x, e.y, e.w, e.d, 0, e.h, '#60656a', '#4c5257', '#3c4044');
+                }
+                else if (item.type === 'tree') {
+                    // 木の幹
+                    drawIsoBlock(ctx, e.x + 10, e.y + 10, 10, 10, 0, 20, '#4a3b2c', '#3a2b1c', '#1a0b0c');
+                    // 葉っぱ（緑のブロック）
+                    drawIsoBlock(ctx, e.x, e.y, 30, 30, 20, e.h - 20, '#2d4c1e', '#1d3c0e', '#0a1c00');
+                }
+                else if (item.type === 'vending') {
+                    // 自販機筐体
+                    drawIsoBlock(ctx, e.x, e.y, e.w, e.d, 0, e.h, '#e0f0ff', '#c2daeb', '#ffffff');
+                    // 前面パネル全体
+                    drawWindowLeftScreen(ctx, e.x, e.y, e.w, e.d, 2, e.w - 4, 4, e.h - 8, '#446677');
+                    // 商品ディスプレイ部
+                    drawWindowLeftScreen(ctx, e.x, e.y, e.w, e.d, 4, e.w - 8, 25, e.h - 40, '#eaf5ff');
+                    // 選択ボタンの列
+                    drawWindowLeftScreen(ctx, e.x, e.y, e.w, e.d, 5, e.w - 10, 18, 4, '#ff3333');
+                    // お金の投入口
+                    drawWindowLeftScreen(ctx, e.x, e.y, e.w, e.d, 28, 6, 8, 12, '#222');
+                    // 商品取り出し口
+                    drawWindowLeftScreen(ctx, e.x, e.y, e.w, e.d, 6, Math.max(2, e.w - 18), 4, 10, '#050505');
+                }
+                else if (item.type === 'pole') {
+                    // 電柱
+                    drawIsoBlock(ctx, e.x, e.y, 6, 6, 0, 120, '#3a3a3a', '#2a2a2a', '#1a1a1a');
+                    drawIsoBlock(ctx, e.x - 18, e.y - 2, 24, 4, 115, 3, '#555', '#444', '#666');
+                    drawIsoBlock(ctx, e.x - 16, e.y - 3, 20, 6, 112, 3, '#eaf5ff', '#cce5ff', '#ffffff');
+                }
+                else if (item.type === 'player') {
+                    const origin = isoScale(e.x, e.y, 0);
+                    const isMoving = e.isMoving;
+                    
+                    // アニメーション周期（可愛らしいトコトコ歩き）
+                    const cycle = isMoving ? (time * 0.015) % (Math.PI * 2) : 0;
+                    
+                    const swingL = isMoving ? Math.sin(cycle) : 0;
+                    const swingR = isMoving ? Math.sin(cycle + Math.PI) : 0;
+                    
+                    // ピョンピョン跳ねる
+                    const bobY = isMoving ? -Math.abs(Math.cos(cycle)) * 5 : 0;
+
+                    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+                    ctx.beginPath(); ctx.ellipse(origin.sx, origin.sy + 2, 12, 6, 0, 0, Math.PI*2); ctx.fill();
+
+                    // プレイヤーの向き
+                    let faceAngle = Math.atan2(e.facingY || 1, e.facingX || 0);
+                    let dir = Math.round((faceAngle + Math.PI) / (Math.PI / 4)) % 8;
+
+                    // --- 新デザイン：可愛らしい小さな女の子（丸みのある滑らか描画） ---
+                    const cDress = '#ff6b81';     // 明るいピンクのワンピース
+                    const cDressD = '#e05668';
+                    const cHair = '#ffb142';      // オレンジのふんわり髪
+                    const cSkin = '#ffeaa7';
+                    const cHat = '#ffffff';       // 白い丸みのある帽子
+                    const cHatLine = '#ff6b81';
+
+                    const drawBody = (facingBack, facingSide, mirrorX) => {
+                        const m = mirrorX ? -1 : 1;
+                        
+                        const stride = 6;
+                        const armAmp = 5;
+
+                        let legL_Y = 0, legL_X = 0;
+                        let legR_Y = 0, legR_X = 0;
+                        let armL_X = 0, armR_X = 0;
+
+                        if (facingSide) {
+                            legL_X = swingL * stride * m;
+                            legL_Y = -Math.abs(swingL) * 2;
+                            legR_X = swingR * stride * m;
+                            legR_Y = -Math.abs(swingR) * 2;
+
+                            armL_X = swingR * armAmp * m;
+                            armR_X = swingL * armAmp * m;
+                        } else {
+                            legL_Y = swingL * 2; 
+                            legR_Y = swingR * 2;
+                            armL_X = swingR * armAmp;
+                            armR_X = swingL * armAmp;
+                        }
+
+                        // --- 脚・靴（丸く） ---
+                        ctx.fillStyle = cSkin;
+                        const drawLeg = (lx, ly, isFront) => {
+                            ctx.beginPath();
+                            ctx.roundRect(origin.sx + lx - 2, origin.sy - 6 + bobY + ly, 4, 8, 2);
+                            ctx.fill();
+                            // 靴
+                            ctx.fillStyle = '#cc8e35'; // 茶色い靴
+                            ctx.beginPath();
+                            ctx.roundRect(origin.sx + lx - 3, origin.sy + bobY + ly, 6, 4, 2);
+                            ctx.fill();
+                            ctx.fillStyle = cSkin;
+                        };
+
+                        if (facingSide) {
+                            drawLeg((mirrorX ? legR_X : legR_X), (mirrorX ? legR_Y : legR_Y) - 2, false); // 奥
+                        } else {
+                            drawLeg(-5, legL_Y, true); // 左
+                            drawLeg(4, legR_Y, true);  // 右
+                        }
+
+                        // --- 胴体（Aラインの滑らかなワンピース） ---
+                        const flare = isMoving ? Math.sin(cycle * 2) * 2 : 0;
+                        ctx.fillStyle = cDress;
+                        ctx.beginPath();
+                        if (facingSide) {
+                            // 横向きのドレス
+                            const sw = isMoving ? swingL * 2 : 0;
+                            ctx.moveTo(origin.sx - 4, origin.sy - 18 + bobY); // 首元前
+                            ctx.lineTo(origin.sx + 4, origin.sy - 18 + bobY); // 首元後ろ
+                            ctx.lineTo(origin.sx + 8 + flare + sw, origin.sy - 2 + bobY); // 裾後ろ
+                            ctx.lineTo(origin.sx - 8 - flare + sw, origin.sy - 2 + bobY); // 裾前
+                            ctx.fill();
+                        } else {
+                            // 前後のドレス
+                            ctx.moveTo(origin.sx - 6, origin.sy - 18 + bobY); // 首左
+                            ctx.lineTo(origin.sx + 6, origin.sy - 18 + bobY); // 首右
+                            ctx.lineTo(origin.sx + 12 + flare, origin.sy - 2 + bobY); // 裾右
+                            ctx.lineTo(origin.sx - 12 - flare, origin.sy - 2 + bobY); // 裾左
+                            ctx.fill();
+                            
+                            // 影
+                            ctx.fillStyle = cDressD;
+                            ctx.beginPath();
+                            ctx.moveTo(origin.sx - 6, origin.sy - 18 + bobY);
+                            ctx.lineTo(origin.sx + 6, origin.sy - 18 + bobY);
+                            ctx.lineTo(origin.sx + 2, origin.sy - 2 + bobY);
+                            ctx.lineTo(origin.sx - 12 - flare, origin.sy - 2 + bobY);
+                            ctx.fill();
+                        }
+
+                        // --- 手前の腕・脚（横向き時） ---
+                        const drawArm = (ax, swing, isBack) => {
+                            ctx.fillStyle = isBack ? cDressD : cDress; // 袖
+                            ctx.beginPath();
+                            ctx.roundRect(origin.sx + ax - 2.5, origin.sy - 16 + bobY, 5, 8, 2);
+                            // 腕の振り
+                            ctx.translate(origin.sx + ax, origin.sy - 16 + bobY);
+                            ctx.rotate(swing * 0.1);
+                            ctx.fillRect(-2.5, 0, 5, 10);
+                            
+                            // 手
+                            ctx.fillStyle = cSkin;
+                            ctx.beginPath();
+                            ctx.arc(0, 11, 2.5, 0, Math.PI*2);
+                            ctx.fill();
+                            
+                            ctx.rotate(-swing * 0.1);
+                            ctx.translate(-(origin.sx + ax), -(origin.sy - 16 + bobY));
+                        };
+
+                        if (facingSide) {
+                            drawLeg((mirrorX ? legL_X : legL_X), (mirrorX ? legL_Y : legL_Y), true); // 手前
+                            // 腕は胴体の後に描く
+                        }
+
+                        // 腕
+                        if (facingSide) {
+                            const frontArmSwing = mirrorX ? armL_X : armL_X;
+                            drawArm(-1, frontArmSwing, false);
+                        } else {
+                            drawArm(-9, armL_X, false); // 左腕
+                            drawArm(9, armR_X, false);  // 右腕
+                        }
+
+                        // --- 頭と顔（大きく丸く） ---
+                        const hy = -28 + bobY;
+                        
+                        // ふんわり後ろ髪
+                        ctx.fillStyle = cHair;
+                        ctx.beginPath(); ctx.arc(origin.sx, origin.sy + hy, 11, 0, Math.PI*2); ctx.fill();
+
+                        if (!facingBack) {
+                            // 顔（丸い）
+                            ctx.fillStyle = cSkin;
+                            ctx.beginPath(); ctx.arc(origin.sx, origin.sy + hy + 2, 8, 0, Math.PI*2); ctx.fill();
+                            
+                            // 目
+                            ctx.fillStyle = '#333';
+                            if (facingSide) {
+                                ctx.beginPath(); ctx.arc(origin.sx - 4*m, origin.sy + hy + 2, 2, 0, Math.PI*2); ctx.fill();
+                                // ほっぺ
+                                ctx.fillStyle = '#ff99aa';
+                                ctx.globalAlpha = 0.6;
+                                ctx.beginPath(); ctx.arc(origin.sx - 1*m, origin.sy + hy + 4, 2.5, 0, Math.PI*2); ctx.fill();
+                                ctx.globalAlpha = 1.0;
+                            } else {
+                                ctx.beginPath(); ctx.arc(origin.sx - 3, origin.sy + hy + 2, 2, 0, Math.PI*2); ctx.fill();
+                                ctx.beginPath(); ctx.arc(origin.sx + 3, origin.sy + hy + 2, 2, 0, Math.PI*2); ctx.fill();
+                                // ほっぺ
+                                ctx.fillStyle = '#ff99aa';
+                                ctx.globalAlpha = 0.6;
+                                ctx.beginPath(); ctx.arc(origin.sx - 5, origin.sy + hy + 4, 2.5, 0, Math.PI*2); ctx.fill();
+                                ctx.beginPath(); ctx.arc(origin.sx + 5, origin.sy + hy + 4, 2.5, 0, Math.PI*2); ctx.fill();
+                                ctx.globalAlpha = 1.0;
+                            }
+                            
+                            // 前髪
+                            ctx.fillStyle = cHair;
+                            ctx.beginPath();
+                            ctx.ellipse(origin.sx, origin.sy + hy - 3, 9, 4, 0, 0, Math.PI*2);
+                            ctx.fill();
+                        }
+
+                        // --- 帽子（丸いカンカン帽風） ---
+                        ctx.fillStyle = cHat;
+                        // つば
+                        ctx.beginPath(); ctx.ellipse(origin.sx, origin.sy + hy - 6, 14, 4, 0, 0, Math.PI*2); ctx.fill();
+                        // 頭頂
+                        ctx.beginPath(); ctx.ellipse(origin.sx, origin.sy + hy - 10, 8, 6, 0, 0, Math.PI*2); ctx.fill();
+                        // 帽子のリボン
+                        ctx.fillStyle = cHatLine;
+                        ctx.beginPath(); ctx.ellipse(origin.sx, origin.sy + hy - 7, 8.5, 3, 0, Math.PI, Math.PI*2); ctx.fill();
+                    };
+
+                    if (dir === 0 || dir === 1 || dir === 2) drawBody(true, false, false);
+                    else if (dir === 4 || dir === 5 || dir === 6) drawBody(false, false, false);
+                    else if (dir === 7) drawBody(false, true, true);
+                    else if (dir === 3) drawBody(false, true, false);
+                }
+                else if (item.type === 'pudding') {
+                    // --- シンプルで美しく滑らかなプリン（ぐちゃぐちゃ排除） ---
+                    const r = e.visualRadius; 
+                    const origin = isoScale(e.x, e.y, 0);
+                    const timeSec = time * 0.001;
+                    
+                    // 複雑なうねりを消し、純粋に「ぷるっ」とした綺麗な膨張収縮のみにする
+                    const scaleY = 1.0 + Math.sin(timeSec * 5) * 0.05;
+                    const scaleX = 1.0 + Math.cos(timeSec * 5) * 0.05;
+                    
+                    const R_X = r * scaleX;
+                    const R_Y = r * 0.9 * scaleY; // 高さベース
+                    
+                    const swayX = Math.sin(timeSec * 2) * (r * 0.03); // ほんの僅かな揺れ
+                    const hoverY = -e.hoverY;
+                    
+                    // --- 影 ---
+                    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+                    ctx.beginPath(); ctx.ellipse(origin.sx, origin.sy, r, r*0.4, 0, 0, Math.PI*2); ctx.fill();
+
+                    // --- オーラ (淡く美しい光) ---
+                    ctx.globalCompositeOperation = 'screen';
+                    const auraGrad = ctx.createRadialGradient(origin.sx, origin.sy - R_Y*0.5 + hoverY, 0, origin.sx, origin.sy - R_Y*0.5 + hoverY, R_X * 2.0);
+                    auraGrad.addColorStop(0, 'rgba(255, 100, 0, 0.4)');
+                    auraGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+                    ctx.fillStyle = auraGrad;
+                    ctx.beginPath(); ctx.arc(origin.sx, origin.sy - R_Y*0.5 + hoverY, R_X * 2.0, 0, Math.PI * 2); ctx.fill();
+                    ctx.globalCompositeOperation = 'source-over';
+
+                    // --- 本体（滑らかな美しいドーム型の黄色いゼリー） ---
+                    // 一切のぐちゃぐちゃした角や頂点をなくす。完全な半楕円＋円柱の合成
+                    const pGrad = ctx.createLinearGradient(0, origin.sy - R_Y*1.5 + hoverY, 0, origin.sy + hoverY);
+                    pGrad.addColorStop(0, '#ffe866'); // 上部は明るいレモンイエロー
+                    pGrad.addColorStop(0.5, '#ffd11a');
+                    pGrad.addColorStop(1, '#d69e00'); // 下部は落ち着いた濃い黄
+                    
+                    ctx.fillStyle = pGrad;
+                    ctx.beginPath();
+                    // 底面のカーブ
+                    ctx.ellipse(origin.sx + swayX, origin.sy + hoverY, R_X, R_X * 0.4, 0, 0, Math.PI);
+                    // 左右の斜めのラインと頂上のドーム曲線を一切の切れ目なく描画
+                    ctx.bezierCurveTo(
+                        origin.sx + R_X + swayX, origin.sy - R_Y + hoverY, // 右下制御点
+                        origin.sx + R_X*0.6 + swayX, origin.sy - R_Y*1.6 + hoverY, // 右上制御点
+                        origin.sx + swayX, origin.sy - R_Y*1.6 + hoverY // 頂点
+                    );
+                    ctx.bezierCurveTo(
+                        origin.sx - R_X*0.6 + swayX, origin.sy - R_Y*1.6 + hoverY, // 左上制御点
+                        origin.sx - R_X + swayX, origin.sy - R_Y + hoverY, // 左下制御点
+                        origin.sx - R_X + swayX, origin.sy + hoverY // 左底
+                    );
+                    ctx.fill();
+
+                    // 立体感をアップさせる美しいツヤ（左上に一つだけ）
+                    ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+                    ctx.beginPath();
+                    ctx.ellipse(origin.sx - R_X * 0.4 + swayX, origin.sy - R_Y * 0.8 + hoverY, R_X * 0.15, R_Y * 0.4, -Math.PI/6, 0, Math.PI*2);
+                    ctx.fill();
+
+                    // --- カラメル部分 (頭頂部にシンプルに乗るだけのツヤツヤチョコソース風) ---
+                    // 波や滴りを一切なくし、帽子のように綺麗な楕円ドームとしてかぶせる
+                    const cGrad = ctx.createLinearGradient(0, origin.sy - R_Y*1.7 + hoverY, 0, origin.sy - R_Y*1.0 + hoverY);
+                    cGrad.addColorStop(0, '#661a00');
+                    cGrad.addColorStop(1, '#2b0000');
+
+                    ctx.fillStyle = cGrad;
+                    ctx.beginPath();
+                    // カラメルの底縁（綺麗な楕円）
+                    ctx.ellipse(origin.sx + swayX, origin.sy - R_Y*1.1 + hoverY, R_X*0.6, R_X*0.2, 0, 0, Math.PI*2);
+                    // カラメルのドーム
+                    ctx.ellipse(origin.sx + swayX, origin.sy - R_Y*1.1 + hoverY, R_X*0.6, R_Y*0.5, 0, Math.PI, Math.PI*2);
+                    ctx.fill();
+
+                    // カラメルの強いツヤ
+                    ctx.fillStyle = 'rgba(255, 200, 200, 0.7)';
+                    ctx.beginPath(); 
+                    ctx.ellipse(origin.sx - R_X*0.25 + swayX, origin.sy - R_Y*1.3 + hoverY, R_X*0.1, R_X*0.04, -Math.PI/8, 0, Math.PI*2);
+                    ctx.fill();
+
+                    // --- 狂気の目（シンプルで丸い可愛い寄りだが不気味） ---
+                    const eyeW = gameState === 'death' ? 20 : 12;
+                    const eyeH = gameState === 'death' ? 20 : 14;
+                    
+                    // 白目 (少し暗い赤紫)
+                    ctx.fillStyle = gameState === 'death' ? '#ff0000' : '#4a0018';
+                    ctx.beginPath(); ctx.ellipse(origin.sx - R_X*0.3 + swayX, origin.sy - R_Y*0.6 + hoverY, eyeW*0.6, eyeH*0.6, 0, 0, Math.PI*2); ctx.fill();
+                    ctx.beginPath(); ctx.ellipse(origin.sx + R_X*0.3 + swayX, origin.sy - R_Y*0.5 + hoverY, eyeW*0.45, eyeH*0.45, 0, 0, Math.PI*2); ctx.fill();
+                    
+                    // 瞳孔の追従
+                    if (gameState !== 'death') {
+                        let px = player.x - e.x, py = player.y - e.y;
+                        let pLen = Math.sqrt(px*px + py*py);
+                        let gx = pLen > 0 ? (px/pLen) * (eyeW*0.2) : 0; 
+                        let gy = pLen > 0 ? (py/pLen) * (eyeH*0.2) : 0;
+                        
+                        // 綺麗なピンクの瞳孔
+                        ctx.fillStyle = '#ff7799';
+                        ctx.beginPath(); ctx.arc(origin.sx - R_X*0.3 + swayX + gx, origin.sy - R_Y*0.6 + hoverY + gy, eyeW*0.3, 0, Math.PI*2); ctx.fill();
+                        ctx.beginPath(); ctx.arc(origin.sx + R_X*0.3 + swayX + gx, origin.sy - R_Y*0.5 + hoverY + gy, eyeW*0.2, 0, Math.PI*2); ctx.fill();
+                        
+                        // はっきりとした白のハイライト（可愛い寄り）
+                        ctx.fillStyle = '#ffffff';
+                        ctx.beginPath(); ctx.arc(origin.sx - R_X*0.3 - 2 + swayX + gx, origin.sy - R_Y*0.6 - 2 + hoverY + gy, eyeW*0.15, 0, Math.PI*2); ctx.fill();
+                        ctx.beginPath(); ctx.arc(origin.sx + R_X*0.3 - 1.5 + swayX + gx, origin.sy - R_Y*0.5 - 1.5 + hoverY + gy, eyeW*0.1, 0, Math.PI*2); ctx.fill();
+                    }
+                }
+                else if (item.type === 'particle') {
+                    const origin = isoScale(e.x, e.y, e.z);
+                    ctx.fillStyle = `rgba(180, 0, 0, ${Math.min(1, e.life)})`;
+                    ctx.fillRect(origin.sx, origin.sy, e.size, e.size);
+                }
+            }
+
+            // 霧（2Dレイヤーとして描画）
+            ctx.fillStyle = '#ffffff';
+            for(let f of fog) {
+                const fIso = isoScale(f.x, f.y, 0);
+                ctx.globalAlpha = f.alpha;
+                ctx.beginPath();
+                ctx.arc(fIso.sx, fIso.sy, f.size, 0, Math.PI*2);
+                ctx.fill();
+            }
+            ctx.globalAlpha = 1.0;
+
+            ctx.restore();
+
+            // ================= 照明（Fog of War / ライト層） =================
+            sCtx.globalCompositeOperation = 'source-over';
+            sCtx.clearRect(0, 0, shadowCanvas.width, shadowCanvas.height);
+            
+            // 死んだときは視界が真っ赤な闇に呑まれる
+            if (gameState === 'death' || gameState === 'gameover') {
+                sCtx.fillStyle = `rgba(30, 0, 0, ${0.9 + Math.min(deathTimer, 1)*0.1})`;
+            } else {
+                sCtx.fillStyle = 'rgba(5, 8, 15, 0.96)';
+            }
+            sCtx.fillRect(0, 0, shadowCanvas.width, shadowCanvas.height);
+
+            sCtx.globalCompositeOperation = 'destination-out';
+
+            function punchLight(lx, ly, radius, alpha) {
+                if (lx < -radius || lx > canvas.width + radius || ly < -radius || ly > canvas.height + radius) return;
+                const safeRadius = Math.max(1, radius);
+                const grad = sCtx.createRadialGradient(lx, ly, 0.1, lx, ly, safeRadius);
+                grad.addColorStop(0, `rgba(0,0,0,${alpha})`);
+                grad.addColorStop(1, 'rgba(0,0,0,0)');
+                sCtx.fillStyle = grad;
+                sCtx.beginPath();
+                sCtx.arc(lx, ly, safeRadius, 0, Math.PI * 2);
+                sCtx.fill();
+            }
+
+            // プレイヤーの視界ライト（心拍に合わせて脈打つ）
+            const beatPulse = Math.sin(pBreatheTimer * 10) * 15;
+            const pIso = isoScale(player.x, player.y, 0);
+            punchLight(pIso.sx - camX, pIso.sy - camY, 200 + beatPulse, 1.0);
+
+            // 街ごとの固定光
+            for (let l of lights) {
+                // チラつき処理
+                if (l.flicker && Math.random() < 0.1) {
+                    l.a = Math.random() < 0.5 ? 0 : l.baseA * (0.5 + Math.random()*0.5);
+                }
+                const lIso = isoScale(l.x, l.y, l.z);
+                punchLight(lIso.sx - camX, lIso.sy - camY, l.r, l.a);
+                const lgIso = isoScale(l.x, l.y, 0);
+                punchLight(lgIso.sx - camX, lgIso.sy - camY, l.r * 0.8, l.a * 0.4);
+            }
+
+            // プリンの発光（禍々しい赤黒いオーラ）
+            const puIso = isoScale(pudding.x, pudding.y, 20 + pudding.hoverY);
+            const pAura = gameState === 'death' ? 500 : 200; // 死の瞬間オーラが広がる
+            punchLight(puIso.sx - camX, puIso.sy - camY, pAura, 0.6);
+
+            // 完成した影キャンバスを上から合成、ただし乗算等で質感を上げる
+            ctx.globalCompositeOperation = 'multiply';
+            ctx.drawImage(shadowCanvas, 0, 0);
+
+            // --- 美しい光のハロー効果（スクリーン合成） ---
+            ctx.globalCompositeOperation = 'screen';
+            for (let l of lights) {
+                const lIso = isoScale(l.x, l.y, l.z);
+                const lx = lIso.sx - camX;
+                const ly = lIso.sy - camY;
+                
+                // 画面外の光はスキップしてパフォーマンス確保
+                if (lx < -l.r * 2 || lx > canvas.width + l.r * 2 || ly < -l.r * 2 || ly > canvas.height + l.r * 2) continue;
+                if (l.a <= 0.01) continue;
+
+                const grad = ctx.createRadialGradient(lx, ly, 0, lx, ly, l.r * 1.5);
+                grad.addColorStop(0, `rgba(${l.rgb}, ${l.a * 0.9})`);
+                grad.addColorStop(0.3, `rgba(${l.rgb}, ${l.a * 0.4})`);
+                grad.addColorStop(1, `rgba(${l.rgb}, 0)`);
+                
+                ctx.fillStyle = grad;
+                ctx.beginPath();
+                ctx.arc(lx, ly, l.r * 1.5, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            ctx.globalCompositeOperation = 'source-over';
+
+            animationFrameId = requestAnimationFrame(gameLoop);
+        }
+    </script>
+</body>
+</html>

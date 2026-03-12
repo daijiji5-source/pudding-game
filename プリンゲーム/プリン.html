@@ -1,0 +1,2270 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>3D 8bit プリンホラー - 恐怖の覚醒</title>
+  <!-- 8bit風の日本語フォントを読み込み -->
+  <link href="https://fonts.googleapis.com/css2?family=DotGothic16&display=swap" rel="stylesheet">
+  <style>
+    body {
+      margin: 0;
+      background-color: #000;
+      overflow: hidden;
+      color: #fff;
+      font-family: 'DotGothic16', sans-serif;
+      user-select: none;
+    }
+
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      image-rendering: pixelated;
+    }
+
+    #ui {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      pointer-events: none;
+      text-align: center;
+      z-index: 10;
+    }
+
+    .panel {
+      background: rgba(5, 5, 10, 0.9);
+      padding: 50px;
+      border: 2px solid #333;
+      box-shadow: 0 0 50px rgba(255, 0, 0, 0.3), inset 0 0 20px #000;
+      pointer-events: auto;
+      backdrop-filter: blur(10px);
+      transition: all 1s;
+    }
+
+    h1 {
+      font-size: 4rem;
+      color: #e00;
+      text-shadow: 2px 2px 0 #300, -2px -2px 0 #500, 0 0 20px #f00;
+      margin: 0 0 20px 0;
+      letter-spacing: 5px;
+    }
+
+    p {
+      font-size: 1.2rem;
+      margin-bottom: 30px;
+      color: #aaa;
+      line-height: 1.8;
+      text-shadow: 1px 1px 0 #000;
+    }
+
+    button {
+      font-family: 'DotGothic16', sans-serif;
+      font-size: 1.5rem;
+      padding: 15px 40px;
+      background: #111;
+      color: #f00;
+      border: 2px solid #a00;
+      cursor: pointer;
+      transition: all 0.2s;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      box-shadow: 0 0 10px rgba(255, 0, 0, 0.2);
+    }
+
+    button:hover {
+      background: #500;
+      color: #fff;
+      box-shadow: 0 0 30px #f00;
+      border-color: #f00;
+      transform: scale(1.05);
+    }
+
+    .hidden {
+      display: none !important;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    #bloodScreen {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      background: radial-gradient(circle, rgba(255, 0, 0, 0) 30%, rgba(150, 0, 0, 0.8) 100%);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s;
+      z-index: 5;
+      mix-blend-mode: multiply;
+    }
+
+    #vignette {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      background: radial-gradient(circle, rgba(0, 0, 0, 0) 40%, rgba(0, 0, 0, 0.9) 100%);
+      pointer-events: none;
+      z-index: 4;
+    }
+
+    /* 画面グリッチエフェクト */
+    .glitch {
+      animation: glitch-skew 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94) both infinite;
+    }
+
+    @keyframes glitch-skew {
+      0% {
+        transform: skew(0deg);
+      }
+
+      20% {
+        transform: skew(-20deg);
+        filter: hue-rotate(90deg);
+      }
+
+      40% {
+        transform: skew(20deg);
+        filter: hue-rotate(-90deg);
+      }
+
+      60% {
+        transform: skew(0deg);
+        opacity: 0.8;
+      }
+
+      80% {
+        transform: skew(5deg);
+      }
+
+      100% {
+        transform: skew(0deg);
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div id="vignette"></div>
+  <div id="bloodScreen"></div>
+  <canvas id="gameCanvas"></canvas>
+
+  <div id="ui">
+    <div id="startScreen" class="panel">
+      <h1>プリン・ザ・ブラッド</h1>
+      <p>W, A, S, Dキー で移動<br>Q, Eキー で画面回転<br>R, Fキー または Vキー(一人称)で視点変更<br>マウスホイール でズーム</p>
+      <button id="startBtn">悪夢を始める</button>
+      <button id="safeModeBtn"
+        style="margin-top:15px; padding: 10px 30px; font-size: 1.2rem; font-family: 'Press Start 2P', monospace; background: #eab543; color: #fff; border: 4px solid #fff; cursor: pointer;">昼の散歩（安全モード）</button>
+      <div style="margin-top: 20px; display: flex; flex-direction: column; gap: 12px; align-items: center;">
+        <label style="cursor: pointer; font-size: 1.2rem;">
+          <input type="checkbox" id="highResCheck" style="transform: scale(1.5); margin-right: 10px;"> 高画質モード（ドット感をなくす）
+        </label>
+        <label style="cursor: pointer; font-size: 1.2rem;">
+          <input type="checkbox" id="bloomCheck" checked style="transform: scale(1.5); margin-right: 10px;">
+          ブルーム（光の溢れ出し）
+        </label>
+        <label style="cursor: pointer; font-size: 1.2rem;">
+          <input type="checkbox" id="motionBlurCheck" style="transform: scale(1.5); margin-right: 10px;"> モーションブラー（残像）
+        </label>
+        <label style="cursor: pointer; font-size: 1.2rem;">
+          <input type="checkbox" id="perspectiveCheck" style="transform: scale(1.5); margin-right: 10px;"> 透視投影モード
+        </label>
+      </div>
+    </div>
+    <div id="gameOverScreen" class="panel hidden">
+      <h1>YOU DIED</h1>
+      <p>消化された......</p>
+      <button id="restartBtn">もう一度ループする</button>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const shadowCanvas = document.createElement('canvas');
+    const sCtx = shadowCanvas.getContext('2d');
+    const sunShadowCanvas = document.createElement('canvas');
+    const sunCtx = sunShadowCanvas.getContext('2d');
+    const blurCanvas = document.createElement('canvas');
+    const blurCtx = blurCanvas.getContext('2d', { willReadFrequently: true });
+    const bloodScreen = document.getElementById('bloodScreen');
+
+    // ==== 音響システム (Web Audio API) ====
+    let audioCtx;
+    const CUSTOM_SFX_FILES = {
+      screech: 'sfx_screech.mp3',
+      heartbeat: 'sfx_heartbeat.mp3'
+    };
+    const customSfx = {};
+    const customSfxState = {};
+    let customSfxLoaded = false;
+    function initAudio() {
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+      initCustomSfx();
+    }
+
+    function initCustomSfx() {
+      if (customSfxLoaded) return;
+      customSfxLoaded = true;
+      Object.entries(CUSTOM_SFX_FILES).forEach(([key, filename]) => {
+        const audio = new Audio(filename);
+        audio.preload = 'auto';
+        audio.volume = 1;
+        customSfxState[key] = 'loading';
+        audio.addEventListener('canplaythrough', () => {
+          customSfxState[key] = 'ready';
+        }, { once: true });
+        audio.addEventListener('error', () => {
+          customSfxState[key] = 'error';
+        }, { once: true });
+        audio.load();
+        customSfx[key] = audio;
+      });
+    }
+
+    function playCustomSfx(name, options = {}) {
+      const audio = customSfx[name];
+      if (!audio) return false;
+      if (customSfxState[name] === 'error') return false;
+      if (audio.readyState < 2) return false;
+      try {
+        const inst = audio.cloneNode();
+        inst.volume = options.volume ?? audio.volume ?? 1;
+        inst.playbackRate = options.rate ?? 1;
+        inst.play().catch(() => {});
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }
+
+    function playScreech() {
+      if (playCustomSfx('screech')) return;
+      if (!audioCtx) return;
+      // 複数のオシレーターで不協和音の絶叫を作成
+      [200, 350, 500].forEach((freq, i) => {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = i % 2 === 0 ? 'sawtooth' : 'square';
+        osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(freq * 3, audioCtx.currentTime + 0.1);
+        osc.frequency.exponentialRampToValueAtTime(50, audioCtx.currentTime + 2.0);
+
+        gain.gain.setValueAtTime(0, audioCtx.currentTime);
+        gain.gain.linearRampToValueAtTime(0.3, audioCtx.currentTime + 0.05);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 2.0);
+
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 2.0);
+      });
+    }
+
+    function playHeartbeat(speed) {
+      if (playCustomSfx('heartbeat', { rate: speed ?? 1 })) return;
+      if (!audioCtx) return;
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(40, audioCtx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(20, audioCtx.currentTime + 0.2);
+      gain.gain.setValueAtTime(0, audioCtx.currentTime);
+      gain.gain.linearRampToValueAtTime(0.8, audioCtx.currentTime + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.3);
+    }
+
+    // ==== 描画・スケール ====
+    let PIXEL_SCALE = 2;
+    const highResCheck = document.getElementById('highResCheck');
+    const bloomCheck = document.getElementById('bloomCheck');
+    const motionBlurCheck = document.getElementById('motionBlurCheck');
+    const perspectiveCheck = document.getElementById('perspectiveCheck');
+
+    highResCheck.addEventListener('change', () => {
+      PIXEL_SCALE = highResCheck.checked ? 1 : 2;
+      resize();
+    });
+
+    function resize() {
+      canvas.width = Math.floor(window.innerWidth / PIXEL_SCALE);
+      canvas.height = Math.floor(window.innerHeight / PIXEL_SCALE);
+      shadowCanvas.width = canvas.width;
+      shadowCanvas.height = canvas.height;
+      sunShadowCanvas.width = canvas.width;
+      sunShadowCanvas.height = canvas.height;
+      blurCanvas.width = canvas.width;
+      blurCanvas.height = canvas.height;
+      ctx.imageSmoothingEnabled = highResCheck.checked;
+      sCtx.imageSmoothingEnabled = highResCheck.checked;
+      sunCtx.imageSmoothingEnabled = highResCheck.checked;
+      blurCtx.imageSmoothingEnabled = highResCheck.checked;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // 俯瞰用パラメータ（カメラ回転対応、慣性付き）
+    let targetCamAngle = Math.PI / 4;
+    let camAngle = targetCamAngle;
+    let targetCamPitch = 0.6;
+    let camPitch = targetCamPitch; // 見下ろしの圧縮率（0で真横、1で真上）
+    let targetCamPitch3d = 0.28;
+    let camPitch3d = targetCamPitch3d;
+
+    // --- 追加：一人称・ズーム用変数 ---
+    let targetCamScale = 1.0;
+    let camScale = targetCamScale;
+    let isFPS = false;
+    let currentEyeZ = 0;
+
+    const PERSPECTIVE_NEAR = 5;
+    const PERSPECTIVE_FOV = 900;
+    const CAMERA_DISTANCE = 1100;
+    const PERSPECTIVE_MIN_Z = 30;
+
+    let perspectiveMix = 0; // 0: 完全並行, 1: 完全透視
+    const PURE_PERSPECTIVE_THRESHOLD = 0.995;
+    const PERSPECTIVE_PIPELINE_START = 0.75;
+    const PERSPECTIVE_PIPELINE_END = 0.98;
+    const PITCH_LINK_RATIO = 2.15; // 俯瞰ピッチと透視ピッチを相互変換する係数
+    const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
+    const lerp = (a, b, t) => a + (b - a) * t;
+    function isPerspective() {
+      return perspectiveMix > 0.01;
+    }
+    function usePerspectivePipeline() {
+      return perspectiveMix >= PURE_PERSPECTIVE_THRESHOLD;
+    }
+    function getPerspectiveBlend() {
+      if (perspectiveMix <= PERSPECTIVE_PIPELINE_START) return 0;
+      if (perspectiveMix >= PERSPECTIVE_PIPELINE_END) return 1;
+      const t = (perspectiveMix - PERSPECTIVE_PIPELINE_START) / (PERSPECTIVE_PIPELINE_END - PERSPECTIVE_PIPELINE_START);
+      return t * t * (3 - 2 * t);
+    }
+    function getPerspectiveYaw() {
+      return camAngle;
+    }
+
+    function getPerspectivePitchMin() {
+      const anchorZ = (player ? player.z + (isFPS ? 80 : 60) : 80);
+      const ratio = (PERSPECTIVE_MIN_Z - anchorZ) / CAMERA_DISTANCE;
+      return Math.asin(Math.max(-1, Math.min(1, ratio)));
+    }
+
+    window.addEventListener('wheel', e => {
+      targetCamScale -= e.deltaY * 0.002;
+      const minScale = lerp(0.1, 0.75, perspectiveMix);
+      const maxScale = lerp(15.0, 1.6, perspectiveMix);
+      targetCamScale = clamp(targetCamScale, minScale, maxScale);
+    });
+
+    function getCamBasis() {
+      const D = CAMERA_DISTANCE;
+      const a = camAngle;
+      const pitch = camPitch3d;
+
+      // ISO の座標系規約に基づいてカメラ基底を構築する：
+      // ISO screen right = (cos(a), -sin(a), 0)
+      // ISO depth        = (sin(a),  cos(a), 0)
+      //
+      // 透視カメラもこれと同じ規約にする:
+      // right   = (cos(a), -sin(a), 0)       ← ISO screen-X と完全一致
+      // forward = depth方向をpitchで下に傾けた方向
+      //         = (sin(a)*cos(pitch), cos(a)*cos(pitch), -sin(pitch))
+      const right = { x: Math.cos(a), y: -Math.sin(a), z: 0 };
+      const forward = {
+        x: Math.sin(a) * Math.cos(pitch),
+        y: Math.cos(a) * Math.cos(pitch),
+        z: -Math.sin(pitch)
+      };
+
+      const anchorZ = (player ? player.z + (isFPS ? 80 : 60) : 80);
+      const camPos = {
+        x: camWorldX - forward.x * D,
+        y: camWorldY - forward.y * D,
+        z: anchorZ - forward.z * D
+      };
+      camPos.z = Math.max(PERSPECTIVE_MIN_Z, camPos.z);
+
+      // trueUp = right × forward  (右手系で上方向を構築)
+      const trueUp = {
+        x: right.y * forward.z - right.z * forward.y,
+        y: right.z * forward.x - right.x * forward.z,
+        z: right.x * forward.y - right.y * forward.x
+      };
+
+      return { camPos, forward, right, trueUp };
+    }
+
+    function worldToCamera(x, y, z) {
+      const basis = getCamBasis();
+      const relX = x - basis.camPos.x;
+      const relY = y - basis.camPos.y;
+      const relZ = z - basis.camPos.z;
+      return {
+        cx: relX * basis.right.x + relY * basis.right.y + relZ * basis.right.z,
+        cy: relX * basis.trueUp.x + relY * basis.trueUp.y + relZ * basis.trueUp.z,
+        cz: relX * basis.forward.x + relY * basis.forward.y + relZ * basis.forward.z
+      };
+    }
+
+    function camDepth(x, y, z = 0) {
+      return worldToCamera(x, y, z).cz;
+    }
+
+    function faceVisibleToCamera(center, normal) {
+      if (perspectiveMix <= 0) return true;
+      const { camPos } = getCamBasis();
+      const vx = camPos.x - center.x;
+      const vy = camPos.y - center.y;
+      const vz = camPos.z - center.z;
+      return (vx * normal.x + vy * normal.y + vz * normal.z) > 0.001;
+    }
+
+    function isAxisFaceVisible(bx, by, bw, bd, bz, bh, axis, positive) {
+      const isoVisible = (() => {
+        if (axis === 'x') return positive ? Math.sin(camAngle) >= 0 : Math.sin(camAngle) < 0;
+        return positive ? Math.cos(camAngle) >= 0 : Math.cos(camAngle) < 0;
+      })();
+      if (perspectiveMix < 0.05) return isoVisible;
+
+      const center = { x: bx + bw * 0.5, y: by + bd * 0.5, z: bz + bh * 0.5 };
+      const normal = { x: 0, y: 0, z: 0 };
+      if (axis === 'x') {
+        center.x = positive ? bx + bw : bx;
+        normal.x = positive ? 1 : -1;
+      } else {
+        center.y = positive ? by + bd : by;
+        normal.y = positive ? 1 : -1;
+      }
+      const perspVisible = faceVisibleToCamera(center, normal);
+      const blended = lerp(isoVisible ? 1 : 0, perspVisible ? 1 : 0, perspectiveMix);
+      return blended > 0.5;
+    }
+
+    function clipPolygonNear(poly, nearZ = PERSPECTIVE_NEAR) {
+      const out = [];
+      for (let i = 0; i < poly.length; i++) {
+        const a = poly[i];
+        const b = poly[(i + 1) % poly.length];
+        const aIn = a.cz >= nearZ;
+        const bIn = b.cz >= nearZ;
+
+        if (aIn && bIn) {
+          out.push(b);
+        } else if (aIn && !bIn) {
+          const t = (nearZ - a.cz) / (b.cz - a.cz);
+          out.push({
+            cx: a.cx + (b.cx - a.cx) * t,
+            cy: a.cy + (b.cy - a.cy) * t,
+            cz: nearZ
+          });
+        } else if (!aIn && bIn) {
+          const t = (nearZ - a.cz) / (b.cz - a.cz);
+          out.push({
+            cx: a.cx + (b.cx - a.cx) * t,
+            cy: a.cy + (b.cy - a.cy) * t,
+            cz: nearZ
+          });
+          out.push(b);
+        }
+      }
+      return out;
+    }
+
+    function projectCamToScreen(p) {
+      const scale = PERSPECTIVE_FOV / p.cz;
+      return { sx: p.cx * scale, sy: -p.cy * scale, cz: p.cz };
+    }
+
+    function projectCamPolygon(camPoly) {
+      const clipped = clipPolygonNear(camPoly);
+      if (clipped.length < 3) return null;
+      let depth = 0;
+      const points = clipped.map(p => {
+        depth += p.cz;
+        return projectCamToScreen(p);
+      });
+      return { points, depth: depth / clipped.length };
+    }
+
+    function fillProjectedPolygon(ctx, points, color) {
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(points[0].sx, points[0].sy);
+      for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].sx, points[i].sy);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    function isoScale(x, y, z) {
+      const cA = Math.cos(camAngle);
+      const sA = Math.sin(camAngle);
+      const rx = x * cA - y * sA;
+      const ry = x * sA + y * cA;
+      const iso = { sx: rx, sy: ry * camPitch - z, cz: Infinity, rawCz: Infinity };
+
+      const { cx, cy, cz } = worldToCamera(x, y, z);
+      const safeZ = Math.max(PERSPECTIVE_NEAR, cz);
+      const scale = PERSPECTIVE_FOV / safeZ;
+      const persp = { sx: cx * scale, sy: -cy * scale, cz: safeZ, rawCz: cz };
+
+      const mix = getPerspectiveBlend();
+      if (mix <= 0.0001) return iso;
+      if (mix >= 0.9999) return persp;
+      return {
+        sx: iso.sx * (1 - mix) + persp.sx * mix,
+        sy: iso.sy * (1 - mix) + persp.sy * mix,
+        cz: persp.cz,
+        rawCz: persp.rawCz
+      };
+    }
+
+    function clippedNear(rawCz) {
+      const clipZ = PERSPECTIVE_NEAR * perspectiveMix;
+      return clipZ > 0 && rawCz < clipZ;
+    }
+
+    // ==== 状態管理 ====
+    let gameState = 'start'; // start, play, death, gameover
+    let lastTime = 0;
+    let animationFrameId;
+
+    let screenShake = 0;
+    let deathTimer = 0;
+    let pBreatheTimer = 0;
+    let isSafeMode = false;
+
+    const keys = { w: false, a: false, s: false, d: false, ' ': false, shift: false, q: false, e: false, r: false, f: false };
+    window.addEventListener('keydown', e => {
+      const k = e.key.toLowerCase();
+      if (keys.hasOwnProperty(k)) keys[k] = true;
+      // 透視/並行投影をワンタッチ切替（Tキー）
+      if (k === 't' && perspectiveCheck) {
+        perspectiveCheck.checked = !perspectiveCheck.checked;
+        perspectiveCheck.dispatchEvent(new Event('change'));
+      }
+      if (k === 'v') {
+        isFPS = !isFPS;
+        const baseIso = isFPS ? 0.05 : 0.6;
+        targetCamPitch = clamp(baseIso, 0.05, 1.0);
+        const minPitch = getPerspectivePitchMin();
+        const mapped = clamp(baseIso / PITCH_LINK_RATIO, minPitch, 1.0);
+        targetCamPitch3d = mapped;
+        camLookZ *= (1 - perspectiveMix);
+        const [minS, maxS] = isFPS ? [0.6, 3.0] : [0.3, 12.0];
+        targetCamScale = clamp(targetCamScale, minS, maxS);
+      }
+    });
+    window.addEventListener('keyup', e => {
+      const k = e.key.toLowerCase();
+      if (keys.hasOwnProperty(k)) keys[k] = false;
+    });
+    perspectiveCheck?.addEventListener('change', () => {
+      const toPerspective = perspectiveCheck.checked;
+      const minPitch = getPerspectivePitchMin();
+      if (toPerspective) {
+        const mapped = clamp(camPitch / PITCH_LINK_RATIO, minPitch, 1.0);
+        targetCamPitch3d = mapped;
+        camPitch3d = mapped;
+      } else {
+        const mapped = clamp(camPitch3d * PITCH_LINK_RATIO, 0.05, 1.0);
+        targetCamPitch = mapped;
+        camPitch = mapped;
+      }
+      const [minS, maxS] = toPerspective ? [0.65, 2.5] : [0.1, 15.0];
+      targetCamScale = clamp(targetCamScale, minS, maxS);
+    });
+
+    document.getElementById('startBtn').onclick = () => { isSafeMode = false; initAudio(); startGame(); };
+    document.getElementById('safeModeBtn').onclick = () => { isSafeMode = true; initAudio(); startGame(); };
+    document.getElementById('restartBtn').onclick = () => { isSafeMode = false; startGame(); };
+
+    let player, pudding, entities, lights, particles, trails, fog;
+    let playerBreadcrumbs = [];
+    const MAP_SIZE = 1600;
+    const BLOCK_SIZE = 360;
+    const ROAD_W = 140;
+    // バックアップ版の昼配色に合わせる
+    const DAY_ROAD_LIT = '#e5d7db';
+    const DAY_ROAD_LINE = '#ffffff';
+    const DAY_SHADOW_R = 75;
+    const DAY_SHADOW_G = 110;
+    const DAY_SHADOW_B = 160;
+    const DAY_ROAD_SHADOW = 'rgba(38, 55, 120, 0.88)';
+    const SUN_SHADOW_X = 2.0;
+    const SUN_SHADOW_Y = -1.2;
+    const ENABLE_SUN_SHADOWS = true;
+    let activeShadowCasters = [];
+
+    // カメラ（遅延追従用ワールド座標）
+    let camWorldX = 0, camWorldY = 0;
+    let camOffsetPhase = 0; // 手持ちカメラ的なふらつき用位相反復
+    let camLookZ = 0; // 見上げ用Zオフセット
+
+    function startGame() {
+      document.getElementById('startScreen').classList.add('hidden');
+      document.getElementById('gameOverScreen').classList.add('hidden');
+      document.body.classList.remove('glitch');
+
+      if (isSafeMode) {
+        bloodScreen.style.opacity = '0';
+        document.getElementById('vignette').style.opacity = '0';
+      } else {
+        document.getElementById('vignette').style.opacity = '1';
+        bloodScreen.style.opacity = '0';
+      }
+      screenShake = 0;
+      deathTimer = 0;
+
+      player = {
+        x: ROAD_W / 2, y: ROAD_W / 2, z: 0, vz: 0,
+        radius: 10, speed: 180,
+        onGround: false, isCrouching: false, floorZ: 0,
+        scaleX: 1, scaleY: 1, targetScaleX: 1, targetScaleY: 1,
+        scaleVelX: 0, scaleVelY: 0, springness: 0.15, damping: 0.8,
+        leftArmOffset: 0, rightArmOffset: 0, armPhase: 0, skewC: 0
+      };
+
+      // プリン
+      pudding = null;
+      if (!isSafeMode) {
+        const puddingSpawnShift = isPerspective() ? (BLOCK_SIZE + ROAD_W) : 0;
+        pudding = {
+          x: MAP_SIZE - ROAD_W / 2 - puddingSpawnShift,
+          y: MAP_SIZE - ROAD_W / 2 - puddingSpawnShift,
+          z: 0, floorZ: 0, visualRadius: 28, hitRadius: 8, speed: 125, hoverY: 0
+        };
+      }
+
+      playerBreadcrumbs = [];
+      particles = [];
+      entities = [];
+      lights = [];
+      trails = [];
+      fog = [];
+
+      // 霧の生成
+      for (let i = 0; i < 40; i++) {
+        fog.push({
+          x: Math.random() * MAP_SIZE, y: Math.random() * MAP_SIZE,
+          vx: 10 + Math.random() * 20, vy: 5 + Math.random() * 10,
+          size: 150 + Math.random() * 200, alpha: 0.05 + Math.random() * 0.05
+        });
+      }
+
+      buildMap();
+
+      // カメラの初期位置を同期
+      camWorldX = player.x;
+      camWorldY = player.y;
+      camOffsetPhase = 0;
+      camLookZ = 0;
+      targetCamAngle = Math.PI / 4;
+      camAngle = targetCamAngle;
+      const startPerspective = perspectiveCheck?.checked ?? false;
+      perspectiveMix = startPerspective ? 1 : 0;
+      const baseIsoPitch = isFPS ? 0.05 : 0.6;
+      const minPitch = getPerspectivePitchMin();
+      const basePerspPitch = clamp(baseIsoPitch / PITCH_LINK_RATIO, minPitch, 1.0);
+      targetCamPitch = camPitch = baseIsoPitch;
+      targetCamPitch3d = camPitch3d = basePerspPitch;
+      targetCamScale = startPerspective ? (isFPS ? 1.15 : 1.0) : (isFPS ? 2.5 : 1.0);
+      camScale = targetCamScale;
+
+      gameState = 'play';
+      lastTime = performance.now();
+      cancelAnimationFrame(animationFrameId);
+      gameLoop(lastTime);
+    }
+
+    function addLight(x, y, z, r, a, rgb, flicker = false) {
+      lights.push({ x, y, z, r, a, rgb: rgb || '255,255,255', flicker, baseA: a });
+    }
+
+    function buildMap() {
+      for (let x = ROAD_W; x < MAP_SIZE; x += BLOCK_SIZE + ROAD_W) {
+        for (let y = ROAD_W; y < MAP_SIZE; y += BLOCK_SIZE + ROAD_W) {
+
+          entities.push({ type: 'flat', x: x, y: y, w: BLOCK_SIZE, d: BLOCK_SIZE, color: '#2a2d30' });
+
+          // 交差点の横断歩道（ゼブラ模様）
+          for (let i = 0; i < 4; i++) {
+            entities.push({ type: 'flat', x: x - ROAD_W + 20, y: y - ROAD_W + 20 + i * 25, w: ROAD_W - 40, d: 12, color: '#6a6d75' });
+            entities.push({ type: 'flat', x: x - ROAD_W + 20 + i * 25, y: y - 30, w: 12, d: 20, color: '#6a6d75' });
+          }
+
+          const wallThick = 15;
+          const wallH = 25;
+          const piece = 40;
+
+          for (let wx = x; wx < x + BLOCK_SIZE; wx += piece) {
+            // 玄関用の隙間（プレイヤーがブロック内へ逃げ込めるように）
+            if (wx > x + BLOCK_SIZE / 2 - 30 && wx < x + BLOCK_SIZE / 2 + 30) continue;
+            let w = Math.min(piece, x + BLOCK_SIZE - wx);
+            entities.push({ type: 'wall', x: wx, y: y, w: w, d: wallThick, h: wallH });
+            entities.push({ type: 'wall', x: wx, y: y + BLOCK_SIZE - wallThick, w: w, d: wallThick, h: wallH });
+          }
+          for (let wy = y + wallThick; wy < y + BLOCK_SIZE - wallThick; wy += piece) {
+            // 横側の隙間
+            if (wy > y + BLOCK_SIZE / 2 - 30 && wy < y + BLOCK_SIZE / 2 + 30) continue;
+            let d = Math.min(piece, (y + BLOCK_SIZE - wallThick) - wy);
+            entities.push({ type: 'wall', x: x, y: wy, w: wallThick, d: d, h: wallH });
+            entities.push({ type: 'wall', x: x + BLOCK_SIZE - wallThick, y: wy, w: wallThick, d: d, h: wallH });
+          }
+
+          // 家の生成（バリエーション追加）
+          const colors = [
+            { b: '#b8b2a8', l: '#a09b93', r: '#403d39' },
+            { b: '#9ea7af', l: '#8d969e', r: '#333940' },
+            { b: '#c3a1a1', l: '#a38181', r: '#3a2626' },
+            { b: '#a1c3b1', l: '#83a393', r: '#2a3a31' }
+          ];
+
+          const h1Color = colors[Math.floor(Math.random() * colors.length)];
+          const hSizeX = 120 + Math.random() * 60;
+          const hSizeY = 120 + Math.random() * 60;
+          const h1On = Math.random() > 0.3; // 電気がついているか
+          const h1 = { x: x + 40, y: y + 40, w: hSizeX, d: hSizeY, h: 100 + Math.random() * 30, colors: h1Color, lightOn: h1On };
+          entities.push({ type: 'house', ...h1 });
+          if (h1On) addLight(h1.x + h1.w, h1.y + h1.d / 2, 40, 180, 0.4, '255,230,150');
+
+          const h2Color = colors[Math.floor(Math.random() * colors.length)];
+          const h2On = Math.random() > 0.5;
+          const h2 = { x: x + BLOCK_SIZE - 180, y: y + BLOCK_SIZE - 170, w: 140, d: 130, h: 120, colors: h2Color, lightOn: h2On };
+          entities.push({ type: 'house', ...h2 });
+          if (h2On) addLight(h2.x + h2.w / 2, h2.y + h2.d, 40, 180, 0.4, '255,240,180');
+
+          // 庭の木・茂み
+          if (Math.random() > 0.3) {
+            entities.push({ type: 'tree', x: x + 25, y: y + BLOCK_SIZE - 60, w: 30, d: 30, h: 60 });
+            entities.push({ type: 'tree', x: x + BLOCK_SIZE - 60, y: y + 25, w: 30, d: 30, h: 50 });
+          }
+
+          entities.push({ type: 'pole', x: x - 15, y: y - 15 });
+          // ランダムでチラつく街灯 (光のサイズを控えめに・自然に調整)
+          addLight(x - 15, y - 15, 110, 90, 0.8, '200,225,255', Math.random() > 0.7);
+
+          entities.push({ type: 'pole', x: x + BLOCK_SIZE + 15, y: y + BLOCK_SIZE + 15 });
+          addLight(x + BLOCK_SIZE + 15, y + BLOCK_SIZE + 15, 110, 90, 0.8, '200,225,255');
+
+          if ((Math.floor(x + y)) % 3 === 0) {
+            entities.push({ type: 'vending', x: x + 60, y: y + BLOCK_SIZE + wallThick, w: 40, d: 20, h: 60 });
+            // 自販機（点滅させない、光のサイズも調整）
+            addLight(x + 80, y + BLOCK_SIZE + wallThick + 10, 25, 120, 0.8, '160,220,255', false);
+          }
+        }
+      }
+    }
+
+    function addShadowCasterRect(x, y, w, d, h) {
+      if (w <= 0 || d <= 0 || h <= 0) return;
+      activeShadowCasters.push({ x, y, w, d, h });
+    }
+
+    function rebuildShadowCasters() {
+      activeShadowCasters = [];
+      if (!ENABLE_SUN_SHADOWS) return;
+      for (const e of entities) {
+        if (e.type === 'wall' || e.type === 'house' || e.type === 'vending') {
+          addShadowCasterRect(e.x, e.y, e.w || 10, e.d || 10, e.h || 50);
+        } else if (e.type === 'tree') {
+          addShadowCasterRect(e.x + 5, e.y + 5, 20, 20, e.h || 50);
+        } else if (e.type === 'pole') {
+          addShadowCasterRect(e.x, e.y, 6, 6, 120);
+        }
+      }
+      if (player) {
+        addShadowCasterRect(player.x - 8, player.y - 8, 16, 16, 56 + Math.max(0, player.z || 0));
+      }
+      if (pudding) {
+        const sz = (pudding.visualRadius || 28) * 1.6;
+        const h = 30 + Math.max(0, (pudding.hoverY || 0) * 0.2);
+        addShadowCasterRect(pudding.x - sz * 0.5, pudding.y - sz * 0.5, sz, sz, h);
+      }
+    }
+
+    function rayHitsCaster(px, py, pz, vx, vy, vz, c) {
+      let tMin = 0.35;
+      let tMax = 1e9;
+      function clip(minV, maxV, p, v) {
+        if (Math.abs(v) < 1e-6) return p >= minV && p <= maxV;
+        let t1 = (minV - p) / v;
+        let t2 = (maxV - p) / v;
+        if (t1 > t2) { const tmp = t1; t1 = t2; t2 = tmp; }
+        tMin = Math.max(tMin, t1);
+        tMax = Math.min(tMax, t2);
+        return tMax >= tMin;
+      }
+      if (!clip(c.x, c.x + c.w, px, vx)) return false;
+      if (!clip(c.y, c.y + c.d, py, vy)) return false;
+      if (!clip(0, c.h, pz, vz)) return false;
+      return tMax >= tMin;
+    }
+
+    function getSunShadowFactorAt(x, y, z = 0) {
+      if (!isSafeMode || activeShadowCasters.length === 0) return 0;
+      const vx = -SUN_SHADOW_X;
+      const vy = -SUN_SHADOW_Y;
+      const vz = 1;
+      let hits = 0;
+      for (const c of activeShadowCasters) {
+        if (z >= c.h - 0.5) continue;
+        const sx0 = Math.min(c.x, c.x + SUN_SHADOW_X * c.h) - 20;
+        const sx1 = Math.max(c.x + c.w, c.x + c.w + SUN_SHADOW_X * c.h) + 20;
+        const sy0 = Math.min(c.y, c.y + SUN_SHADOW_Y * c.h) - 20;
+        const sy1 = Math.max(c.y + c.d, c.y + c.d + SUN_SHADOW_Y * c.h) + 20;
+        if (x < sx0 || x > sx1 || y < sy0 || y > sy1) continue;
+        if (x >= c.x - 0.1 && x <= c.x + c.w + 0.1 &&
+          y >= c.y - 0.1 && y <= c.y + c.d + 0.1 &&
+          z <= c.h + 0.1) continue;
+        if (rayHitsCaster(x, y, z, vx, vy, vz, c)) {
+          hits++;
+          if (hits >= 3) break;
+        }
+      }
+      return Math.min(1, hits * 0.42);
+    }
+
+    function mixShadowColor(color, strength) {
+      if (!isSafeMode || strength <= 0.001) return color;
+      if (typeof color !== 'string' || color[0] !== '#') return color;
+      let hex = color.slice(1);
+      if (hex.length === 3) hex = hex.split('').map(ch => ch + ch).join('');
+      if (hex.length !== 6) return color;
+      const r = parseInt(hex.slice(0, 2), 16);
+      const g = parseInt(hex.slice(2, 4), 16);
+      const b = parseInt(hex.slice(4, 6), 16);
+      const t = Math.min(1, strength * 0.78);
+      const sr = DAY_SHADOW_R, sg = DAY_SHADOW_G, sb = DAY_SHADOW_B;
+      const rr = Math.round(r * (1 - t) + sr * t);
+      const gg = Math.round(g * (1 - t) + sg * t);
+      const bb = Math.round(b * (1 - t) + sb * t);
+      return `rgb(${rr}, ${gg}, ${bb})`;
+    }
+
+    function checkCollision(px, py, radius, zCheck = Infinity) {
+      if (px - radius < 0 || px + radius > MAP_SIZE || py - radius < 0 || py + radius > MAP_SIZE) return true;
+      for (let e of entities) {
+        if (e.type === 'wall' || e.type === 'house' || e.type === 'vending') {
+          if (px + radius > e.x && px - radius < e.x + e.w &&
+            py + radius > e.y && py - radius < e.y + e.d) {
+            const objHeight = e.h || 50;
+            if (zCheck < objHeight) return true;
+          }
+        }
+      }
+      return false;
+    }
+
+    // ================= 怒涛のゲームオーバー（死の演出）遷移 =================
+    function triggerDeathSequence() {
+      gameState = 'death';
+      playScreech();
+      screenShake = 60; // 激しい揺れ
+      document.body.classList.add('glitch'); // 画面全体が定期的に歪む
+
+      // 四方八方に凄まじい量の血が吹き出す
+      for (let i = 0; i < 300; i++) {
+        particles.push({
+          x: player.x,
+          y: player.y,
+          z: 10 + Math.random() * 20,
+          vx: (Math.random() - 0.5) * 600,
+          vy: (Math.random() - 0.5) * 600,
+          vz: 100 + Math.random() * 400,
+          life: 2.0 + Math.random() * 2.0,
+          size: 2 + Math.random() * 8, // 大きな血糊
+          type: 'blood'
+        });
+      }
+    }
+
+    // ================= 各種3D・ドロー関数 =================
+    function drawIsoFlatRect(ctx, bx, by, bw, bd, color) {
+      const blend = getPerspectiveBlend();
+      if (blend > 0) {
+        ctx.save();
+        ctx.globalAlpha *= blend;
+        const projected = projectCamPolygon([
+          worldToCamera(bx, by, 0),
+          worldToCamera(bx + bw, by, 0),
+          worldToCamera(bx + bw, by + bd, 0),
+          worldToCamera(bx, by + bd, 0)
+        ]);
+        if (projected) fillProjectedPolygon(ctx, projected.points, color);
+        ctx.restore();
+        if (blend >= 1) return;
+      }
+
+      // 隙間（謎の線）を埋めるため、少しだけ大きく描き、strokeでアウトラインを塗りつぶす
+      if (blend < 1) {
+        ctx.save();
+        ctx.globalAlpha *= (1 - blend);
+        const p0 = isoScale(bx, by, 0);
+        const p1 = isoScale(bx + bw + 0.5, by, 0);
+        const p2 = isoScale(bx + bw + 0.5, by + bd + 0.5, 0);
+        const p3 = isoScale(bx, by + bd + 0.5, 0);
+        ctx.fillStyle = color;
+        ctx.beginPath(); ctx.moveTo(p0.sx, p0.sy); ctx.lineTo(p1.sx, p1.sy); ctx.lineTo(p2.sx, p2.sy); ctx.lineTo(p3.sx, p3.sy); ctx.closePath(); ctx.fill();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    function drawIsoBlock(ctx, bx, by, bw, bd, bz, bh, colorLeftScreen, colorRightScreen, colorTop) {
+      const x0 = bx, x1 = bx + bw;
+      const y0 = by, y1 = by + bd;
+      const z0 = bz, z1 = bz + bh;
+      const xMid = (x0 + x1) * 0.5;
+      const yMid = (y0 + y1) * 0.5;
+      const zMid = (z0 + z1) * 0.5;
+
+      const blend = getPerspectiveBlend();
+      if (blend > 0) {
+        ctx.save();
+        ctx.globalAlpha *= blend;
+        const faces = [
+          {
+            color: colorRightScreen,
+            center: { x: x0, y: yMid, z: zMid },
+            normal: { x: -1, y: 0, z: 0 },
+            points: [{ x: x0, y: y0, z: z0 }, { x: x0, y: y1, z: z0 }, { x: x0, y: y1, z: z1 }, { x: x0, y: y0, z: z1 }]
+          },
+          {
+            color: colorRightScreen,
+            center: { x: x1, y: yMid, z: zMid },
+            normal: { x: 1, y: 0, z: 0 },
+            points: [{ x: x1, y: y0, z: z0 }, { x: x1, y: y1, z: z0 }, { x: x1, y: y1, z: z1 }, { x: x1, y: y0, z: z1 }]
+          },
+          {
+            color: colorLeftScreen,
+            center: { x: xMid, y: y0, z: zMid },
+            normal: { x: 0, y: -1, z: 0 },
+            points: [{ x: x0, y: y0, z: z0 }, { x: x1, y: y0, z: z0 }, { x: x1, y: y0, z: z1 }, { x: x0, y: y0, z: z1 }]
+          },
+          {
+            color: colorLeftScreen,
+            center: { x: xMid, y: y1, z: zMid },
+            normal: { x: 0, y: 1, z: 0 },
+            points: [{ x: x0, y: y1, z: z0 }, { x: x1, y: y1, z: z0 }, { x: x1, y: y1, z: z1 }, { x: x0, y: y1, z: z1 }]
+          },
+          {
+            color: colorTop,
+            center: { x: xMid, y: yMid, z: z1 },
+            normal: { x: 0, y: 0, z: 1 },
+            points: [{ x: x0, y: y0, z: z1 }, { x: x1, y: y0, z: z1 }, { x: x1, y: y1, z: z1 }, { x: x0, y: y1, z: z1 }]
+          }
+        ];
+        const projectedFaces = [];
+        for (const face of faces) {
+          if (!faceVisibleToCamera(face.center, face.normal)) continue;
+          const projected = projectCamPolygon(face.points.map(p => worldToCamera(p.x, p.y, p.z)));
+          if (!projected) continue;
+          const shade = getSunShadowFactorAt(face.center.x, face.center.y, face.center.z);
+          projectedFaces.push({
+            color: mixShadowColor(face.color, shade),
+            depth: projected.depth,
+            points: projected.points
+          });
+        }
+        projectedFaces.sort((a, b) => b.depth - a.depth);
+        for (const face of projectedFaces) {
+          fillProjectedPolygon(ctx, face.points, face.color);
+          ctx.strokeStyle = 'rgba(15, 16, 19, 0.45)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(face.points[0].sx, face.points[0].sy);
+          for (let i = 1; i < face.points.length; i++) ctx.lineTo(face.points[i].sx, face.points[i].sy);
+          ctx.closePath();
+          ctx.stroke();
+        }
+        ctx.restore();
+        if (blend >= 1) return;
+      }
+
+      if (blend < 1) {
+        ctx.save();
+        ctx.globalAlpha *= (1 - blend);
+
+        const p00 = isoScale(x0, y0, z0);
+        const p10 = isoScale(x1, y0, z0);
+        const p11 = isoScale(x1, y1, z0);
+        const p01 = isoScale(x0, y1, z0);
+
+        const t00 = isoScale(x0, y0, z1);
+        const t10 = isoScale(x1, y0, z1);
+        const t11 = isoScale(x1, y1, z1);
+        const t01 = isoScale(x0, y1, z1);
+
+        const sA = Math.sin(camAngle);
+        const cA = Math.cos(camAngle);
+
+        // X-axis faces (-X or +X)
+        if (sA >= 0) {
+          // +X face (太陽から影になる面)
+          ctx.fillStyle = mixShadowColor(colorRightScreen, getSunShadowFactorAt(x1, yMid, zMid));
+          ctx.beginPath(); ctx.moveTo(p10.sx, p10.sy); ctx.lineTo(p11.sx, p11.sy); ctx.lineTo(t11.sx, t11.sy); ctx.lineTo(t10.sx, t10.sy); ctx.fill();
+        } else {
+          // -X face (太陽光が当たる明るい面)
+          ctx.fillStyle = mixShadowColor(colorRightScreen, getSunShadowFactorAt(x0, yMid, zMid));
+          ctx.beginPath(); ctx.moveTo(p00.sx, p00.sy); ctx.lineTo(p01.sx, p01.sy); ctx.lineTo(t01.sx, t01.sy); ctx.lineTo(t00.sx, t00.sy); ctx.fill();
+        }
+
+        // Y-axis faces (-Y or +Y)
+        if (cA >= 0) {
+          // +Y face (太陽光が当たる明るい面)
+          ctx.fillStyle = mixShadowColor(colorLeftScreen, getSunShadowFactorAt(xMid, y1, zMid));
+          ctx.beginPath(); ctx.moveTo(p01.sx, p01.sy); ctx.lineTo(p11.sx, p11.sy); ctx.lineTo(t11.sx, t11.sy); ctx.lineTo(t01.sx, t01.sy); ctx.fill();
+        } else {
+          // -Y face (太陽から影になる面)
+          ctx.fillStyle = mixShadowColor(colorLeftScreen, getSunShadowFactorAt(xMid, y0, zMid));
+          ctx.beginPath(); ctx.moveTo(p00.sx, p00.sy); ctx.lineTo(p10.sx, p10.sy); ctx.lineTo(t10.sx, t10.sy); ctx.lineTo(t00.sx, t00.sy); ctx.fill();
+        }
+
+        // Top
+        ctx.fillStyle = mixShadowColor(colorTop, getSunShadowFactorAt(xMid, yMid, z1));
+        ctx.beginPath(); ctx.moveTo(t00.sx, t00.sy); ctx.lineTo(t10.sx, t10.sy); ctx.lineTo(t11.sx, t11.sy); ctx.lineTo(t01.sx, t01.sy); ctx.fill();
+
+        // エッジ（外郭）
+        ctx.strokeStyle = '#0f1013'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(t00.sx, t00.sy); ctx.lineTo(t10.sx, t10.sy); ctx.lineTo(t11.sx, t11.sy); ctx.lineTo(t01.sx, t01.sy); ctx.closePath(); ctx.stroke();
+
+        function strokeEdge(p, t) { ctx.beginPath(); ctx.moveTo(p.sx, p.sy); ctx.lineTo(t.sx, t.sy); ctx.stroke(); }
+        if (sA >= 0 || cA < 0) strokeEdge(p10, t10);
+        if (sA >= 0 || cA >= 0) strokeEdge(p11, t11);
+        if (sA < 0 || cA >= 0) strokeEdge(p01, t01);
+        if (sA < 0 || cA < 0) strokeEdge(p00, t00);
+        ctx.restore();
+      }
+    }
+
+    function drawWorldQuad(ctx, points, color, normal = null) {
+      const blend = getPerspectiveBlend();
+      if (blend > 0) {
+        ctx.save();
+        ctx.globalAlpha *= blend;
+        if (normal) {
+          const center = points.reduce((acc, p) => ({
+            x: acc.x + p.x, y: acc.y + p.y, z: acc.z + p.z
+          }), { x: 0, y: 0, z: 0 });
+          center.x /= points.length;
+          center.y /= points.length;
+          center.z /= points.length;
+          if (!faceVisibleToCamera(center, normal)) {
+            ctx.restore();
+          } else {
+            const projected = projectCamPolygon(points.map(p => worldToCamera(p.x, p.y, p.z)));
+            if (projected) fillProjectedPolygon(ctx, projected.points, color);
+            ctx.restore();
+          }
+        } else {
+          const projected = projectCamPolygon(points.map(p => worldToCamera(p.x, p.y, p.z)));
+          if (projected) fillProjectedPolygon(ctx, projected.points, color);
+          ctx.restore();
+        }
+        if (blend >= 1) return;
+      }
+      if (blend < 1) {
+        ctx.save();
+        ctx.globalAlpha *= (1 - blend);
+        const ps = points.map(p => isoScale(p.x, p.y, p.z));
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(ps[0].sx, ps[0].sy);
+        for (let i = 1; i < ps.length; i++) ctx.lineTo(ps[i].sx, ps[i].sy);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+
+    function drawWindowLeftScreen(ctx, bx, by, bw, bd, woff, ww, wz, wh, color, isFront = true) {
+      const normalY = isFront ? 1 : -1;
+      const y = (isFront ? by + bd : by) + normalY * 0.2 * perspectiveMix;
+      drawWorldQuad(ctx, [
+        { x: bx + woff, y, z: wz },
+        { x: bx + woff + ww, y, z: wz },
+        { x: bx + woff + ww, y, z: wz + wh },
+        { x: bx + woff, y, z: wz + wh }
+      ], color, { x: 0, y: normalY, z: 0 });
+    }
+
+    function drawWindowRightScreen(ctx, bx, by, bw, bd, woff, ww, wz, wh, color, isFront = true) {
+      const normalX = isFront ? 1 : -1;
+      const x = (isFront ? bx + bw : bx) + normalX * 0.2 * perspectiveMix;
+      drawWorldQuad(ctx, [
+        { x, y: by + woff, z: wz },
+        { x, y: by + woff + ww, z: wz },
+        { x, y: by + woff + ww, z: wz + wh },
+        { x, y: by + woff, z: wz + wh }
+      ], color, { x: normalX, y: 0, z: 0 });
+    }
+
+
+    // ================= メインループ =================
+    function gameLoop(time) {
+      let dt = Math.min((time - lastTime) / 1000, 0.1);
+      lastTime = time;
+      pBreatheTimer += dt;
+
+      // --- プレイ中のロジック ---
+      if (gameState === 'play') {
+        // 視点（カメラ）の操作（目標値を変化させる）
+        if (isPerspective()) {
+          if (keys.q) targetCamAngle += 2.0 * dt;
+          if (keys.e) targetCamAngle -= 2.0 * dt;
+          const minPitch3d = getPerspectivePitchMin();
+          if (keys.r) targetCamPitch3d = Math.max(minPitch3d, targetCamPitch3d - 1.6 * dt);
+          if (keys.f) targetCamPitch3d = Math.min(1.0, targetCamPitch3d + 1.6 * dt);
+          targetCamPitch3d = Math.max(minPitch3d, targetCamPitch3d);
+          camLookZ = 0;
+        } else {
+          if (keys.q) targetCamAngle += 2.0 * dt;
+          if (keys.e) targetCamAngle -= 2.0 * dt;
+          if (keys.r) {
+            if (targetCamPitch > 0.05) targetCamPitch = Math.max(0.05, targetCamPitch - 1.5 * dt);
+            else camLookZ += 800 * dt;
+          } else if (!isFPS) {
+            camLookZ += (0 - camLookZ) * 6 * dt;
+          }
+          if (keys.f) {
+            targetCamPitch = Math.min(1.0, targetCamPitch + 1.5 * dt);
+            camLookZ += (0 - camLookZ) * 6 * dt;
+          }
+        }
+
+        // 視点の回転に合わせてWASDの移動方向を補正する（透視/平行を滑らかに補間）
+        let isoDx = 0, isoDy = 0, perspDx = 0, perspDy = 0;
+        {
+          let inputX = 0, inputY = 0;
+          if (keys.w) { inputX -= 1; inputY -= 1; }
+          if (keys.s) { inputX += 1; inputY += 1; }
+          if (keys.a) { inputX -= 1; inputY += 1; }
+          if (keys.d) { inputX += 1; inputY -= 1; }
+          const diffA = camAngle - (Math.PI / 4);
+          isoDx = inputX * Math.cos(-diffA) - inputY * Math.sin(-diffA);
+          isoDy = inputX * Math.sin(-diffA) + inputY * Math.cos(-diffA);
+        }
+        {
+          const forward = (keys.w ? 1 : 0) + (keys.s ? -1 : 0);
+          const strafe = (keys.d ? 1 : 0) + (keys.a ? -1 : 0);
+          const yaw = getPerspectiveYaw();
+          const fx = Math.sin(yaw);
+          const fy = Math.cos(yaw);
+          const rx = Math.cos(yaw);
+          const ry = -Math.sin(yaw);
+          perspDx = fx * forward + rx * strafe;
+          perspDy = fy * forward + ry * strafe;
+        }
+        let dx = lerp(isoDx, perspDx, perspectiveMix);
+        let dy = lerp(isoDy, perspDy, perspectiveMix);
+
+        // 高さの更新
+        const GRAVITY = 800;
+        let prevZ = player.z;
+        player.vz -= GRAVITY * dt;
+        player.z += player.vz * dt;
+
+        // 現在のXY上にある一番高い床（オブジェクト）を探す
+        let currentFloorZ = 0;
+        for (let e of entities) {
+          if (e.type === 'wall' || e.type === 'house' || e.type === 'vending') {
+            // プレイヤーの円が対象矩形と重なっているか
+            if (player.x + player.radius > e.x && player.x - player.radius < e.x + e.w &&
+              player.y + player.radius > e.y && player.y - player.radius < e.y + e.d) {
+              const objHeight = e.h || 50;
+              // 落下によってオブジェクト高さを貫通した場合、または既に上にいる場合に乗れる
+              if (objHeight > currentFloorZ && (prevZ >= objHeight || player.z >= objHeight)) {
+                currentFloorZ = objHeight;
+              }
+            }
+          }
+        }
+
+        player.floorZ = currentFloorZ;
+
+        // 着地判定
+        if (player.z <= currentFloorZ) {
+          if (!player.onGround && player.vz < -100) {
+            let impact = Math.min(Math.abs(player.vz), 500);
+            player.scaleVelX += impact * 0.0005;
+            player.scaleVelY -= impact * 0.0005;
+          }
+          player.z = currentFloorZ;
+          player.vz = 0;
+          player.onGround = true;
+        } else {
+          player.onGround = false;
+        }
+
+        if (keys[' '] && player.onGround) {
+          player.vz = 350; // Jump force
+          player.onGround = false;
+          player.scaleVelX -= 0.25;
+          player.scaleVelY += 0.35;
+          player.isCrouching = false;
+        }
+
+        player.isCrouching = (keys.shift && player.onGround);
+
+        let currentSpeed = player.speed;
+        if (player.isCrouching) currentSpeed *= 0.5;
+
+        let length = Math.sqrt(dx * dx + dy * dy);
+
+        // アニメーション用のスケール計算（プリンアクションの移植）
+        let speedScale = length > 0 ? 0.05 : 0;
+        if (player.isCrouching) {
+          player.targetScaleX = 1.35;
+          player.targetScaleY = 0.55;
+        } else {
+          player.targetScaleX = 1 + (player.onGround ? speedScale : -0.15);
+          player.targetScaleY = 1 - (player.onGround ? speedScale : -0.15);
+        }
+
+        player.scaleVelX += (player.targetScaleX - player.scaleX) * player.springness;
+        player.scaleVelY += (player.targetScaleY - player.scaleY) * player.springness;
+        player.scaleVelX *= player.damping;
+        player.scaleVelY *= player.damping;
+        player.scaleX += player.scaleVelX;
+        player.scaleY += player.scaleVelY;
+
+        let targetSkew = 0;
+        if (player.onGround && length > 0) {
+          targetSkew = (dx + dy) * -0.02; // 斜め移動に合わせて少し傾く
+        }
+        player.skewC += (targetSkew - player.skewC) * 0.3;
+
+        let targetLeft = 0;
+        let targetRight = 0;
+        if (!player.onGround) {
+          targetLeft = 35;
+          targetRight = 35;
+        } else if (player.isCrouching) {
+          targetLeft = -15;
+          targetRight = -15;
+        } else if (length > 0) {
+          player.armPhase += 0.2;
+          targetLeft = Math.sin(player.armPhase) * 20;
+          targetRight = -Math.sin(player.armPhase) * 20;
+        }
+        player.leftArmOffset += (targetLeft - player.leftArmOffset) * 0.25;
+        player.rightArmOffset += (targetRight - player.rightArmOffset) * 0.25;
+
+        if (length > 0) {
+          dx /= length; dy /= length;
+          player.facingX = dx;
+          player.facingY = dy;
+          player.isMoving = true;
+
+          // 足跡/軌跡を残す
+          if (Math.random() < 0.2) {
+            trails.push({ x: player.x, y: player.y, life: 3.0, type: 'player' });
+          }
+
+          if (playerBreadcrumbs.length === 0) {
+            playerBreadcrumbs.push({ x: player.x, y: player.y });
+          } else {
+            const lastBc = playerBreadcrumbs[playerBreadcrumbs.length - 1];
+            if ((player.x - lastBc.x) ** 2 + (player.y - lastBc.y) ** 2 > 900) {
+              playerBreadcrumbs.push({ x: player.x, y: player.y });
+              if (playerBreadcrumbs.length > 200) playerBreadcrumbs.shift();
+            }
+          }
+        } else {
+          player.isMoving = false;
+        }
+
+        let nx = player.x + dx * currentSpeed * dt;
+        if (!checkCollision(nx, player.y, player.radius, player.z)) player.x = nx;
+
+        let ny = player.y + dy * currentSpeed * dt;
+        if (!checkCollision(player.x, ny, player.radius, player.z)) player.y = ny;
+
+        // ================= プリンの処理 =================
+        let realDist = Infinity;
+        if (!isSafeMode && pudding) {
+          // プリンの追跡（スマートなルート検索でスタック回避）
+          let targetX = player.x;
+          let targetY = player.y;
+          realDist = Math.sqrt((player.x - pudding.x) ** 2 + (player.y - pudding.y) ** 2);
+
+          function clearLineOfSight(x1, y1, x2, y2) {
+            let dx = x2 - x1, dy = y2 - y1;
+            let d = Math.sqrt(dx * dx + dy * dy);
+            let steps = Math.ceil(d / 15);
+            for (let i = 1; i < steps; i++) {
+              if (checkCollision(x1 + dx * i / steps, y1 + dy * i / steps, 8, 0)) return false;
+            }
+            return true;
+          }
+
+          if (!clearLineOfSight(pudding.x, pudding.y, player.x, player.y) && playerBreadcrumbs.length > 0) {
+            let targetBc = null;
+            for (let i = playerBreadcrumbs.length - 1; i >= 0; i--) {
+              if (clearLineOfSight(pudding.x, pudding.y, playerBreadcrumbs[i].x, playerBreadcrumbs[i].y)) {
+                targetBc = i < playerBreadcrumbs.length - 1 ? playerBreadcrumbs[i + 1] : playerBreadcrumbs[i];
+                break;
+              }
+            }
+            if (targetBc) {
+              targetX = targetBc.x;
+              targetY = targetBc.y;
+            } else {
+              let minDist = Infinity;
+              for (let bc of playerBreadcrumbs) {
+                let dSq = (pudding.x - bc.x) ** 2 + (pudding.y - bc.y) ** 2;
+                if (dSq < minDist) { minDist = dSq; targetX = bc.x; targetY = bc.y; }
+              }
+            }
+          }
+
+          const pdx = targetX - pudding.x;
+          const pdy = targetY - pudding.y;
+          const distToTarget = Math.sqrt(pdx * pdx + pdy * pdy);
+
+          if (distToTarget > 0) {
+            let moveX = (pdx / distToTarget) * pudding.speed * dt;
+            let moveY = (pdy / distToTarget) * pudding.speed * dt;
+
+            let pnx = pudding.x + moveX;
+            let canX = !checkCollision(pnx, pudding.y, 10, 0);
+            if (canX) pudding.x = pnx;
+
+            let pny = pudding.y + moveY;
+            let canY = !checkCollision(pudding.x, pny, 10, 0);
+            if (canY) pudding.y = pny;
+
+            if (!canX && Math.abs(moveY) < pudding.speed * dt * 0.2) {
+              pudding.slideDir = pudding.slideDir || (Math.random() > 0.5 ? 1 : -1);
+              let sy = pudding.slideDir * pudding.speed * dt * 0.9;
+              if (!checkCollision(pudding.x, pudding.y + sy, 10, 0)) pudding.y += sy;
+              else pudding.slideDir *= -1;
+            }
+            else if (!canY && Math.abs(moveX) < pudding.speed * dt * 0.2) {
+              pudding.slideDir = pudding.slideDir || (Math.random() > 0.5 ? 1 : -1);
+              let sx = pudding.slideDir * pudding.speed * dt * 0.9;
+              if (!checkCollision(pudding.x + sx, pudding.y, 10, 0)) pudding.x += sx;
+              else pudding.slideDir *= -1;
+            }
+            else if (canX || canY) {
+              if (Math.random() < 0.05) pudding.slideDir = Math.random() > 0.5 ? 1 : -1;
+            }
+            if (distToTarget > 0 && Math.random() < 0.05) {
+              screenShake += 1.5; // 移動時に不気味に揺れる
+            }
+          }
+
+          // プリンの長い残像は出さない（丸い接地影のみ）
+
+          // *** 新しい当たり判定 ***
+          if (realDist < player.radius + pudding.hitRadius) {
+            triggerDeathSequence();
+          }
+        } // End if(!isSafeMode)
+
+        // 恐怖演出：近づくと心拍サウンドと画面の赤み
+        if (gameState === 'play' && !isSafeMode) {
+          bloodScreen.style.opacity = Math.max(0, 1 - (realDist / 400));
+          if (realDist < 500) {
+            const beatInterval = Math.max(0.2, (realDist / 500) * 1.0);
+            if (pBreatheTimer > beatInterval) {
+              playHeartbeat();
+              pBreatheTimer = 0;
+              if (Math.random() > 0.5) screenShake += 3;
+            }
+          }
+        }
+      }
+      // --- 死亡演出中のロジック ---
+      else if (gameState === 'death') {
+        deathTimer += dt;
+        bloodScreen.style.opacity = '1';
+
+        // プリンが死体に乗りかかって巨大化する（ジャンプスケア的）
+        pudding.x += (player.x - pudding.x) * 10 * dt;
+        pudding.y += (player.y - pudding.y) * 10 * dt;
+        pudding.visualRadius += 200 * dt; // 尋常じゃない速度で膨れ上がる
+        pudding.hoverY += 50 * dt; // 上に覆い被さってくる
+
+        if (deathTimer > 3.0) {
+          gameState = 'gameover';
+          document.getElementById('gameOverScreen').classList.remove('hidden');
+        }
+      }
+
+      // カメラの画角とピッチ、スケールをなめらかに目標値に追従させる（慣性）
+      camAngle += (targetCamAngle - camAngle) * 8 * dt;
+      camPitch += (targetCamPitch - camPitch) * 8 * dt;
+      camPitch3d += (targetCamPitch3d - camPitch3d) * 8 * dt;
+      camScale += (targetCamScale - camScale) * 8 * dt;
+      const targetMix = (perspectiveCheck && perspectiveCheck.checked) ? 1 : 0;
+      perspectiveMix += (targetMix - perspectiveMix) * 8 * dt;
+      perspectiveMix = Math.max(0, Math.min(1, perspectiveMix));
+      const minPitch3d = getPerspectivePitchMin();
+      targetCamPitch3d = Math.max(minPitch3d, targetCamPitch3d);
+      camPitch3d = Math.max(minPitch3d, camPitch3d);
+      camLookZ *= (1 - perspectiveMix);
+
+      // 手持ちカメラのような心地よい「横揺れ・前後揺れ」の計算（歩行時に少し大きくなる）
+      let swayAmt = player.isMoving ? 8.0 : 2.0;
+      camOffsetPhase += (player.isMoving ? 5.0 : 1.5) * dt;
+      let swayX = Math.cos(camOffsetPhase) * swayAmt;
+      let swayY = Math.sin(camOffsetPhase * 0.8) * swayAmt; // 左右と前後で違う周期にして自然にする
+
+      // カメラの遅延追従（ワールド座標で追従することで回転時のブレを完全に解消）
+      // この 4 * dt によって「移動時の程よい遅延（揺れ）」を作っています
+      // さらに swayX, swayY を足すことで、進行方向とは関係ないルーズな遊び（左右の揺れ）を生みます
+      camWorldX += ((player.x + swayX) - camWorldX) * 4 * dt;
+      camWorldY += ((player.y + swayY) - camWorldY) * 4 * dt;
+
+      // 画面揺れ
+      let shakeX = 0, shakeY = 0;
+      if (screenShake > 0) {
+        shakeX = (Math.random() - 0.5) * screenShake;
+        shakeY = (Math.random() - 0.5) * screenShake;
+        screenShake *= 0.9; // 減衰
+      }
+
+      // パーティクル（物理と重力）
+      for (let p of particles) {
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.z += p.vz * dt;
+        p.vz -= 800 * dt; // 重力
+        if (p.z < 0) {
+          p.z = 0;
+          p.vx *= 0.5; // 床に落ちたら摩擦で止まる
+          p.vy *= 0.5;
+          p.vz *= -0.3; // 跳ね返り
+        }
+        p.life -= dt;
+      }
+      particles = particles.filter(p => p.life > 0);
+
+      // 軌跡
+      for (let t of trails) t.life -= dt;
+      trails = trails.filter(t => t.life > 0);
+
+      // 霧
+      for (let f of fog) {
+        f.x += f.vx * dt;
+        f.y += f.vy * dt;
+        if (f.x > MAP_SIZE + 200) f.x = -200;
+        if (f.y > MAP_SIZE + 200) f.y = -200;
+      }
+      rebuildShadowCasters();
+
+      // ================= 描画処理 =================
+      currentEyeZ = (isFPS ? (player.z + 80) : 0) + camLookZ * (1 - perspectiveMix);
+      const camCenter = isoScale(camWorldX, camWorldY, currentEyeZ);
+      let fpsYOffset = isFPS ? (-canvas.height / 2 / camScale + 120) * (1 - perspectiveMix) : 0;
+
+      const camX = camCenter.sx - canvas.width / 2 + shakeX;
+      const camY = camCenter.sy - canvas.height / 2 + shakeY + fpsYOffset;
+
+      if (isSafeMode) {
+        // 超美麗アニメ空 (深い青から水平線の強い光へ)
+        let skyGrad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+        skyGrad.addColorStop(0, '#198edc');
+        skyGrad.addColorStop(0.52, '#6cc4ff');
+        skyGrad.addColorStop(1, '#edf8ff');
+        ctx.fillStyle = skyGrad;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // --- 太陽の描画（ワールド座標系に基づく画面上の位置へ） ---
+        ctx.save();
+        ctx.translate(canvas.width / 2, canvas.height / 2);
+        ctx.scale(camScale, camScale);
+        ctx.translate(-canvas.width / 2, -canvas.height / 2);
+        ctx.translate(-camX, -camY);
+
+        let sunObjAngle = Math.PI * 0.75; // 画面左奥 (-X, +Y) 方向
+        const sunH = lerp(4000, 3200, perspectiveMix);
+        let pSun = isoScale(Math.cos(sunObjAngle) * 8000, Math.sin(sunObjAngle) * 8000, sunH);
+
+        ctx.globalCompositeOperation = 'screen';
+        let sunGrad = ctx.createRadialGradient(pSun.sx, pSun.sy, 300, pSun.sx, pSun.sy, 5000);
+        sunGrad.addColorStop(0, 'rgba(255, 255, 250, 1)');
+        sunGrad.addColorStop(0.12, 'rgba(255, 241, 198, 0.88)');
+        sunGrad.addColorStop(0.34, 'rgba(255, 194, 112, 0.36)');
+        sunGrad.addColorStop(1, 'rgba(255, 110, 20, 0)');
+        ctx.fillStyle = sunGrad;
+        ctx.beginPath(); ctx.arc(pSun.sx, pSun.sy, 5000, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+      } else {
+        ctx.fillStyle = '#15171a';  // より暗く冷たいアスファルトの色
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+
+      ctx.save();
+      // ズーム（スケール）の適用
+      ctx.translate(canvas.width / 2, canvas.height / 2);
+      ctx.scale(camScale, camScale);
+      ctx.translate(-canvas.width / 2, -canvas.height / 2);
+
+      ctx.translate(-camX, -camY);
+
+      if (isSafeMode) {
+        // 広大な地面キャンバス (暖かくて明るい日差しの道路)
+        drawIsoFlatRect(ctx, -10000, -10000, 20000, 20000, DAY_ROAD_LIT);
+      }
+
+      // レンダリング用リスト
+      const renderItems = [];
+
+      // オブジェクトが上に乗っている場合、手前の壁より確実に手前に描画するための関数
+      // ※視点回転に合わせて純粋なデプス計算(手前か奥か)もカメラ角度に依存させる
+      const cosD = Math.sin(camAngle);
+      const sinD = Math.cos(camAngle);
+      function getBaseDepth(e) {
+        const ew = e.w || 0; const ed = e.d || 0;
+        const cx = e.x + ew / 2; const cy = e.y + ed / 2;
+        const zc = (e.z || 0) + (e.h || 0) * 0.5;
+        const isoDepth = cx * cosD + cy * sinD;
+        const perspDepth = -Math.max(PERSPECTIVE_NEAR, camDepth(cx, cy, zc));
+        return lerp(isoDepth, perspDepth, perspectiveMix);
+      }
+
+      let entityDepths = new Map();
+      for (let e of entities) {
+        if (e.type !== 'flat') {
+          entityDepths.set(e, getBaseDepth(e));
+        }
+      }
+
+      function calcDepth(obj, baseZWeight = 0) {
+        let d = getBaseDepth(obj) + (obj.z || 0) * baseZWeight;
+        for (let e of entities) {
+          if (e.type === 'wall' || e.type === 'house' || e.type === 'vending') {
+            let ew = e.w || 0; let ed = e.d || 0;
+            let padding = 15;
+            if (obj.x > e.x - padding && obj.x < e.x + ew + padding &&
+              obj.y > e.y - padding && obj.y < e.y + ed + padding) {
+              if ((obj.z || 0) >= (e.h || 50) - 5) {
+                d = Math.max(d, entityDepths.get(e) + 1);
+              }
+            }
+          }
+        }
+        return d;
+      }
+
+      // フラットなオブジェクト（軌跡や地形）は先に描く
+      for (let e of entities) {
+        if (e.type === 'flat') renderItems.push({ type: 'flat', obj: e, depth: -10000 });
+      }
+      if (ENABLE_SUN_SHADOWS) {
+        renderItems.push({ type: 'shadows', obj: null, depth: -9500 });
+      }
+      for (let t of trails) {
+        renderItems.push({ type: 'trail', obj: t, depth: -5000 });
+      }
+
+      // プレイヤー（一人称または死亡時は描画しない）
+      if (gameState !== 'gameover' && gameState !== 'death' && !isFPS) {
+        renderItems.push({ type: 'player', obj: player, depth: calcDepth(player) });
+      }
+      // プリン
+      if (pudding) {
+        renderItems.push({ type: 'pudding', obj: pudding, depth: calcDepth(pudding) });
+      }
+
+      for (let e of entities) {
+        if (e.type !== 'flat') {
+          renderItems.push({ type: e.type, obj: e, depth: entityDepths.get(e) });
+        }
+      }
+      for (let p of particles) {
+        renderItems.push({ type: 'particle', obj: p, depth: calcDepth(p) });
+      }
+
+      renderItems.sort((a, b) => a.depth - b.depth);
+
+      // アイテム描画ループ
+      for (let item of renderItems) {
+        const e = item.obj;
+        if (item.type === 'flat') {
+          let col = e.color;
+          // 昼はグレー等を少し明るく色づかせる（イラスト風）
+          if (isSafeMode && col === '#2a2d30') col = DAY_ROAD_LIT;
+          if (isSafeMode && col === '#6a6d75') col = DAY_ROAD_LINE;
+          drawIsoFlatRect(ctx, e.x, e.y, e.w, e.d, col);
+        }
+        else if (item.type === 'shadows') {
+          // 影を一度マスク化してから着色合成することで、重なっても二重に濃くならないようにする
+          const sx = SUN_SHADOW_X;
+          const sy = SUN_SHADOW_Y;
+          const worldTransform = ctx.getTransform();
+          sunCtx.setTransform(1, 0, 0, 1, 0, 0);
+          sunCtx.clearRect(0, 0, sunShadowCanvas.width, sunShadowCanvas.height);
+          sunCtx.setTransform(worldTransform);
+          sunCtx.globalCompositeOperation = 'source-over';
+          sunCtx.fillStyle = 'rgba(255,255,255,1)';
+          sunCtx.filter = 'blur(6px)';
+
+          function getConvexHull(pts) {
+            pts.sort((a, b) => a.sx === b.sx ? a.sy - b.sy : a.sx - b.sx);
+            const lower = [];
+            for (let i = 0; i < pts.length; i++) {
+              while (lower.length >= 2) {
+                const p = lower[lower.length - 2];
+                const q = lower[lower.length - 1];
+                const r = pts[i];
+                if ((q.sx - p.sx) * (r.sy - p.sy) - (q.sy - p.sy) * (r.sx - p.sx) <= 0) lower.pop();
+                else break;
+              }
+              lower.push(pts[i]);
+            }
+            const upper = [];
+            for (let i = pts.length - 1; i >= 0; i--) {
+              while (upper.length >= 2) {
+                const p = upper[upper.length - 2];
+                const q = upper[upper.length - 1];
+                const r = pts[i];
+                if ((q.sx - p.sx) * (r.sy - p.sy) - (q.sy - p.sy) * (r.sx - p.sx) <= 0) upper.pop();
+                else break;
+              }
+              upper.push(pts[i]);
+            }
+            upper.pop();
+            lower.pop();
+            return lower.concat(upper);
+          }
+
+          for (const c of activeShadowCasters) {
+            const bx = c.x;
+            const by = c.y;
+            const w = c.w;
+            const d = c.d;
+            const h = c.h;
+            const pts = [
+              isoScale(bx, by, 0), isoScale(bx + w, by, 0),
+              isoScale(bx + w, by + d, 0), isoScale(bx, by + d, 0),
+              isoScale(bx + h * sx, by + h * sy, 0), isoScale(bx + w + h * sx, by + h * sy, 0),
+              isoScale(bx + w + h * sx, by + d + h * sy, 0), isoScale(bx + h * sx, by + d + h * sy, 0)
+            ];
+            if (pts.some(p => clippedNear(p.rawCz))) continue;
+            const hull = getConvexHull(pts);
+            if (hull.length > 0) {
+              sunCtx.beginPath();
+              sunCtx.moveTo(hull[0].sx, hull[0].sy);
+              for (let i = 1; i < hull.length; i++) sunCtx.lineTo(hull[i].sx, hull[i].sy);
+              sunCtx.closePath();
+              sunCtx.fill();
+            }
+          }
+
+          sunCtx.setTransform(1, 0, 0, 1, 0, 0);
+          sunCtx.globalCompositeOperation = 'source-in';
+          sunCtx.fillStyle = DAY_ROAD_SHADOW;
+          sunCtx.fillRect(0, 0, sunShadowCanvas.width, sunShadowCanvas.height);
+          sunCtx.globalCompositeOperation = 'source-over';
+          sunCtx.filter = 'none';
+
+          ctx.save();
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          ctx.globalCompositeOperation = 'source-over';
+          ctx.drawImage(sunShadowCanvas, 0, 0);
+          ctx.globalCompositeOperation = 'multiply';
+          ctx.globalAlpha = 0.38;
+          ctx.drawImage(sunShadowCanvas, 0, 0);
+          ctx.restore();
+        }
+        else if (item.type === 'trail') {
+          const origin = isoScale(e.x, e.y, 0);
+          if (clippedNear(origin.rawCz)) continue;
+          const perspScale = Math.max(0.25, Math.min(1.6, PERSPECTIVE_FOV / Math.max(PERSPECTIVE_NEAR, origin.cz)));
+          const trailScale = lerp(1, perspScale, perspectiveMix);
+          ctx.fillStyle = e.type === 'player' ? `rgba(0,0,0,${0.2 * e.life / 3.0})` : `rgba(40,0,0,${0.8 * e.life / 10.0})`;
+          ctx.beginPath();
+          ctx.ellipse(origin.sx, origin.sy, (e.type === 'player' ? 5 : 15) * trailScale, (e.type === 'player' ? 2 : 7) * trailScale, 0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        else if (item.type === 'wall') {
+          drawIsoBlock(ctx, e.x, e.y, e.w, e.d, 0, e.h,
+            isSafeMode ? '#fff8e1' : '#60656a',
+            isSafeMode ? '#cfd8dc' : '#4c5257',
+            isSafeMode ? '#ffffff' : '#3c4044');
+        }
+        else if (item.type === 'house') {
+          const c = e.colors || { b: '#b8b2a8', l: '#a09b93', r: '#403d39' };
+
+          let dL, dR, dT;
+          if (c.b === '#b8b2a8') { dL = '#ffffff'; dR = '#86a8c4'; dT = '#5cd6ff'; } // 白い壁と青い屋根
+          else if (c.b === '#9ea7af') { dL = '#fff3e0'; dR = '#a89d97'; dT = '#ff8a65'; } // ベージュの壁とオレンジ屋根
+          else if (c.b === '#c3a1a1') { dL = '#f1f8e9'; dR = '#78909c'; dT = '#81c784'; } // 薄緑の壁と緑の屋根
+          else { dL = '#ffecb3'; dR = '#9fa8da'; dT = '#f48fb1'; } // 薄黄の壁とピンクの屋根
+
+          let L = isSafeMode ? dL : c.b;
+          let R = isSafeMode ? dR : c.l;
+          let T = isSafeMode ? dT : c.r;
+
+          drawIsoBlock(ctx, e.x, e.y, e.w, e.d, 0, e.h, L, R, T);
+
+          let rimL = isSafeMode ? '#e0e0e0' : '#353a40';
+          let rimR = isSafeMode ? '#78909c' : '#25292e';
+          let rimT = isSafeMode ? '#ffffff' : '#1a1c20';
+          drawIsoBlock(ctx, e.x - 5, e.y - 5, e.w + 10, e.d + 10, e.h, 15, rimL, rimR, rimT);
+
+          // 安全モード(昼間)は電気を消す
+          const isLightOn = isSafeMode ? false : e.lightOn;
+          const winLight = isLightOn ? '#ffdf7a' : '#222';
+          const winLightB = isLightOn ? '#aaddff' : '#222';
+
+          const showYFront = isAxisFaceVisible(e.x, e.y, e.w, e.d, 0, e.h, 'y', true);
+          const showYBack = isAxisFaceVisible(e.x, e.y, e.w, e.d, 0, e.h, 'y', false);
+          const showXFront = isAxisFaceVisible(e.x, e.y, e.w, e.d, 0, e.h, 'x', true);
+          const showXBack = isAxisFaceVisible(e.x, e.y, e.w, e.d, 0, e.h, 'x', false);
+
+          if (showYFront) {
+            if (e.w > 130) {
+              drawWindowLeftScreen(ctx, e.x, e.y, e.w, e.d, 20, 30, 30, 30, winLight, true);
+              drawWindowLeftScreen(ctx, e.x, e.y, e.w, e.d, 26, 18, 5, 50, '#2e2118', true); // ドア
+            } else {
+              drawWindowLeftScreen(ctx, e.x, e.y, e.w, e.d, 15, 25, 30, 30, winLightB, true);
+            }
+            // エアコンの室外機（+Y面のディテール）
+            drawIsoBlock(ctx, e.x + e.w - 20, e.y + e.d, 20, 15, 0, 20, '#d0d4d8', '#bbc0c4', '#a0a5aa');
+          }
+
+          if (showYBack) {
+            if (e.w > 130) {
+              drawWindowLeftScreen(ctx, e.x, e.y, e.w, e.d, 20, 30, 30, 30, winLight, false);
+              drawWindowLeftScreen(ctx, e.x, e.y, e.w, e.d, e.w - 50, 30, 30, 30, winLight, false);
+            } else {
+              drawWindowLeftScreen(ctx, e.x, e.y, e.w, e.d, 15, 25, 30, 30, winLightB, false);
+            }
+          }
+
+          if (showXFront) {
+            if (e.w > 130) {
+              drawWindowRightScreen(ctx, e.x, e.y, e.w, e.d, 30, 40, 40, 20, winLight, true);
+            } else {
+              drawWindowRightScreen(ctx, e.x, e.y, e.w, e.d, 15, 25, 30, 30, winLightB, true);
+            }
+          }
+
+          if (showXBack) {
+            if (e.w > 130) {
+              drawWindowRightScreen(ctx, e.x, e.y, e.w, e.d, 30, 40, 40, 20, winLight, false);
+            } else {
+              drawWindowRightScreen(ctx, e.x, e.y, e.w, e.d, 15, 25, 30, 30, winLightB, false);
+            }
+          }
+        }
+        else if (item.type === 'tree') {
+          // 木の幹
+          drawIsoBlock(ctx, e.x + 10, e.y + 10, 10, 10, 0, 20,
+            isSafeMode ? '#795548' : '#4a3b2c',
+            isSafeMode ? '#5d4037' : '#3a2b1c',
+            isSafeMode ? '#8d6e63' : '#1a0b0c');
+
+          // 葉っぱ（緑のブロック）
+          if (isSafeMode) {
+            drawIsoBlock(ctx, e.x, e.y, 30, 30, 20, e.h - 20, '#aed581', '#558b2f', '#8bc34a'); // アニメ風の色鮮やかな緑と強い影
+          } else {
+            drawIsoBlock(ctx, e.x, e.y, 30, 30, 20, e.h - 20, '#2d4c1e', '#1d3c0e', '#0a1c00');
+          }
+        }
+        else if (item.type === 'vending') {
+          // 自販機筐体 (昼間は鮮やかな赤色にする)
+          drawIsoBlock(ctx, e.x, e.y, e.w, e.d, 0, e.h,
+            isSafeMode ? '#ff5252' : '#e0f0ff',
+            isSafeMode ? '#b71c1c' : '#c2daeb',
+            isSafeMode ? '#ff8a80' : '#ffffff');
+
+          const showYFront = isAxisFaceVisible(e.x, e.y, e.w, e.d, 0, e.h, 'y', true);
+          const showYBack = isAxisFaceVisible(e.x, e.y, e.w, e.d, 0, e.h, 'y', false);
+          if (showYFront) { // 前面（+Y方向）
+            // 前面パネル全体
+            drawWindowLeftScreen(ctx, e.x, e.y, e.w, e.d, 2, e.w - 4, 4, e.h - 8, '#446677', true);
+
+            // 安全モード（昼）は自販機の電気も消す
+            const dispColor = isSafeMode ? '#334444' : '#eaf5ff';
+            const btnColor = isSafeMode ? '#661111' : '#ff3333';
+
+            // 商品ディスプレイ部
+            drawWindowLeftScreen(ctx, e.x, e.y, e.w, e.d, 4, e.w - 8, 25, e.h - 40, dispColor, true);
+            // 選択ボタンの列
+            drawWindowLeftScreen(ctx, e.x, e.y, e.w, e.d, 5, e.w - 10, 18, 4, btnColor, true);
+            // お金の投入口
+            drawWindowLeftScreen(ctx, e.x, e.y, e.w, e.d, 28, 6, 8, 12, '#222', true);
+            // 商品取り出し口
+            drawWindowLeftScreen(ctx, e.x, e.y, e.w, e.d, 6, Math.max(2, e.w - 18), 4, 10, '#050505', true);
+          }
+          if (showYBack) {
+            // 背面パネルの換気口（グレーのブロック表現）
+            drawWindowLeftScreen(ctx, e.x, e.y, e.w, e.d, 5, e.w - 10, 15, e.h - 30, '#556677', false);
+          }
+        }
+        else if (item.type === 'pole') {
+          // 電柱
+          drawIsoBlock(ctx, e.x, e.y, 6, 6, 0, 120,
+            isSafeMode ? '#d7ccc8' : '#3a3a3a',
+            isSafeMode ? '#8d6e63' : '#2a2a2a',
+            isSafeMode ? '#f5f5f5' : '#1a1a1a');
+
+          drawIsoBlock(ctx, e.x - 18, e.y - 2, 24, 4, 115, 3,
+            isSafeMode ? '#bdbdbd' : '#555',
+            isSafeMode ? '#757575' : '#444',
+            isSafeMode ? '#e0e0e0' : '#666');
+
+          // 安全モード（昼）は街灯の電球を消す
+          if (isSafeMode) {
+            drawIsoBlock(ctx, e.x - 16, e.y - 3, 20, 6, 112, 3, '#9e9e9e', '#616161', '#757575');
+          } else {
+            drawIsoBlock(ctx, e.x - 16, e.y - 3, 20, 6, 112, 3, '#eaf5ff', '#cce5ff', '#ffffff');
+          }
+        }
+        else if (item.type === 'player') {
+          const origin = isoScale(e.x, e.y, e.z || 0);
+          if (clippedNear(origin.rawCz)) continue;
+          const isMoving = e.isMoving;
+
+          // 足元の影（プレイヤーの現在乗っている床の高さを基準にする）
+          let floorZ = e.floorZ || 0;
+          const shadowOrigin = isoScale(e.x, e.y, floorZ);
+          const shadowSize = Math.max(0, 16 - (e.z - floorZ) * 0.05); // 床からの高さに応じて影が薄く小さくなる
+          if (shadowSize > 0 && (perspectiveMix < 0.98 || shadowOrigin.rawCz >= PERSPECTIVE_NEAR)) {
+            const alpha = Math.max(0, 0.5 - (e.z - floorZ) * 0.005);
+            ctx.fillStyle = isSafeMode
+              ? `rgba(${DAY_SHADOW_R}, ${DAY_SHADOW_G}, ${DAY_SHADOW_B}, ${Math.min(0.5, alpha * 0.95)})`
+              : `rgba(0,0,0,${alpha})`;
+            ctx.beginPath(); ctx.ellipse(shadowOrigin.sx, shadowOrigin.sy + 2, shadowSize, shadowSize * 0.5, 0, 0, Math.PI * 2); ctx.fill();
+          }
+
+          ctx.save();
+          ctx.translate(origin.sx, origin.sy);
+
+          // サイズ調整用スケール
+          let pScale = 0.22;
+          const dScale = Math.max(0.2, Math.min(1.8, PERSPECTIVE_FOV / Math.max(PERSPECTIVE_NEAR, origin.cz)));
+          pScale *= lerp(1, dScale, perspectiveMix);
+
+          // 左右反転の判定 (facingXを利用)
+          let isLeft = false;
+          let faceAngle = Math.atan2(e.facingY || 1, e.facingX || 0);
+          if (Math.abs(faceAngle) > Math.PI / 2) isLeft = true;
+          let sx = isLeft ? -1 : 1;
+
+          // playerの動的スケール・傾きを適用
+          ctx.scale(pScale * sx * e.scaleX, pScale * e.scaleY);
+          ctx.transform(1, 0, e.skewC, 1, 0, 0);
+
+          // 描画位置を高さ分ずらす
+          const h = 136;
+          ctx.translate(0, -h);
+
+          // --- プリンアクション.html からの完全移植 ---
+          const bodyColor = '#FEF68B';
+          const hatColor = '#A78149';
+          const outlineColor = '#433224';
+
+          ctx.lineWidth = 14;
+          ctx.lineJoin = 'round';
+          ctx.lineCap = 'round';
+          ctx.strokeStyle = outlineColor;
+
+          const topW = 96;
+          const botW = 180;
+          const hatH = 28;
+
+          // 左腕
+          ctx.beginPath();
+          const leftArmBaseX = -topW / 2 - ((botW / 2 - topW / 2) * 0.55);
+          const leftArmBaseY = h * 0.55;
+          ctx.moveTo(leftArmBaseX + 6, leftArmBaseY);
+          ctx.lineTo(leftArmBaseX - 35, leftArmBaseY - 30 - e.leftArmOffset);
+          ctx.stroke();
+
+          // 右腕
+          ctx.beginPath();
+          const rightArmBaseX = topW / 2 + ((botW / 2 - topW / 2) * 0.55);
+          const rightArmBaseY = h * 0.55;
+          ctx.moveTo(rightArmBaseX - 6, rightArmBaseY);
+          ctx.lineTo(rightArmBaseX + 35, rightArmBaseY - 30 - e.rightArmOffset);
+          ctx.stroke();
+
+          // 胴体
+          const bodyPath = new Path2D();
+          bodyPath.moveTo(-topW / 2, 0);
+          bodyPath.lineTo(topW / 2, 0);
+          bodyPath.lineTo(botW / 2, h - 3);
+          bodyPath.quadraticCurveTo(0, h + 10, -botW / 2, h - 3);
+          bodyPath.closePath();
+
+          ctx.fillStyle = bodyColor;
+          ctx.fill(bodyPath);
+
+          // 帽子
+          const hatBotW_half = topW / 2 + ((botW / 2 - topW / 2) * (hatH / h));
+          const hatPath = new Path2D();
+          hatPath.moveTo(-topW / 2, 0);
+          hatPath.lineTo(topW / 2, 0);
+          hatPath.lineTo(hatBotW_half, hatH);
+          hatPath.quadraticCurveTo(0, hatH + 2, -hatBotW_half, hatH);
+          hatPath.closePath();
+
+          ctx.fillStyle = hatColor;
+          ctx.fill(hatPath);
+
+          ctx.stroke(bodyPath);
+
+          ctx.beginPath();
+          ctx.moveTo(-hatBotW_half, hatH);
+          ctx.quadraticCurveTo(0, hatH + 2, hatBotW_half, hatH);
+          ctx.stroke();
+
+          // 目
+          ctx.fillStyle = outlineColor;
+
+          ctx.beginPath();
+          ctx.arc(-20, 56, 5, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.beginPath();
+          ctx.arc(20, 56, 5, 0, Math.PI * 2);
+          ctx.fill();
+
+          // 口
+          ctx.beginPath();
+          ctx.lineWidth = 10;
+          const mouthW = 32;
+          ctx.moveTo(-mouthW, 94);
+
+          let mouthY = 102;
+          if (e.isCrouching) mouthY = 98;
+          else if (e.vz > 50) mouthY = 106;
+
+          ctx.quadraticCurveTo(0, mouthY, mouthW, 94);
+          ctx.stroke();
+
+          ctx.restore();
+        }
+        else if (item.type === 'pudding') {
+          // --- シンプルで美しく滑らかなプリン（ぐちゃぐちゃ排除） ---
+          const origin = isoScale(e.x, e.y, 0);
+          if (clippedNear(origin.rawCz)) continue;
+          const perspScale = Math.max(0.2, Math.min(2.0, PERSPECTIVE_FOV / Math.max(PERSPECTIVE_NEAR, origin.cz)));
+          const depthScale = lerp(1.0, perspScale, perspectiveMix);
+          const r = e.visualRadius * depthScale;
+          const timeSec = time * 0.001;
+
+          // 複雑なうねりを消し、純粋に「ぷるっ」とした綺麗な膨張収縮のみにする
+          const scaleY = 1.0 + Math.sin(timeSec * 5) * 0.05;
+          const scaleX = 1.0 + Math.cos(timeSec * 5) * 0.05;
+
+          const R_X = r * scaleX;
+          const R_Y = r * 0.9 * scaleY; // 高さベース
+
+          const swayX = Math.sin(timeSec * 2) * (r * 0.03); // ほんの僅かな揺れ
+          const hoverY = -e.hoverY;
+
+          // --- 影（高品質な落ち影） ---
+          {
+            const shadowH = Math.max(0, (e.hoverY || 0));
+            const offX = SUN_SHADOW_X * (20 + shadowH * 0.6);
+            const offY = SUN_SHADOW_Y * (20 + shadowH * 0.6);
+            const shadowPos = isoScale(e.x + offX, e.y + offY, 0);
+            if (perspectiveMix < 0.98 || shadowPos.rawCz >= PERSPECTIVE_NEAR) {
+              const rx = r * 1.15;
+              const ry = r * 0.55;
+              ctx.save();
+              ctx.globalCompositeOperation = 'multiply';
+              ctx.filter = 'blur(4px)';
+              ctx.globalAlpha = isSafeMode ? 0.55 : 0.45;
+              ctx.fillStyle = DAY_ROAD_SHADOW;
+              ctx.beginPath();
+              ctx.ellipse(shadowPos.sx, shadowPos.sy, rx, ry, Math.atan2(SUN_SHADOW_Y, SUN_SHADOW_X), 0, Math.PI * 2);
+              ctx.fill();
+              ctx.restore();
+            }
+          }
+
+          // --- オーラ (淡く美しい光) ---
+          ctx.globalCompositeOperation = 'screen';
+          const auraGrad = ctx.createRadialGradient(origin.sx, origin.sy - R_Y * 0.5 + hoverY, 0, origin.sx, origin.sy - R_Y * 0.5 + hoverY, R_X * 2.0);
+          auraGrad.addColorStop(0, 'rgba(255, 100, 0, 0.4)');
+          auraGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+          ctx.fillStyle = auraGrad;
+          ctx.beginPath(); ctx.arc(origin.sx, origin.sy - R_Y * 0.5 + hoverY, R_X * 2.0, 0, Math.PI * 2); ctx.fill();
+          ctx.globalCompositeOperation = 'source-over';
+
+          // --- 本体（滑らかな美しいドーム型の黄色いゼリー） ---
+          // 一切のぐちゃぐちゃした角や頂点をなくす。完全な半楕円＋円柱の合成
+          const pGrad = ctx.createLinearGradient(0, origin.sy - R_Y * 1.5 + hoverY, 0, origin.sy + hoverY);
+          pGrad.addColorStop(0, '#ffe866'); // 上部は明るいレモンイエロー
+          pGrad.addColorStop(0.5, '#ffd11a');
+          pGrad.addColorStop(1, '#d69e00'); // 下部は落ち着いた濃い黄
+
+          ctx.fillStyle = pGrad;
+          ctx.beginPath();
+          // 底面のカーブ
+          ctx.ellipse(origin.sx + swayX, origin.sy + hoverY, R_X, R_X * 0.4, 0, 0, Math.PI);
+          // 左右の斜めのラインと頂上のドーム曲線を一切の切れ目なく描画
+          ctx.bezierCurveTo(
+            origin.sx + R_X + swayX, origin.sy - R_Y + hoverY, // 右下制御点
+            origin.sx + R_X * 0.6 + swayX, origin.sy - R_Y * 1.6 + hoverY, // 右上制御点
+            origin.sx + swayX, origin.sy - R_Y * 1.6 + hoverY // 頂点
+          );
+          ctx.bezierCurveTo(
+            origin.sx - R_X * 0.6 + swayX, origin.sy - R_Y * 1.6 + hoverY, // 左上制御点
+            origin.sx - R_X + swayX, origin.sy - R_Y + hoverY, // 左下制御点
+            origin.sx - R_X + swayX, origin.sy + hoverY // 左底
+          );
+          ctx.fill();
+
+          // 立体感をアップさせる美しいツヤ（左上に一つだけ）
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+          ctx.beginPath();
+          ctx.ellipse(origin.sx - R_X * 0.4 + swayX, origin.sy - R_Y * 0.8 + hoverY, R_X * 0.15, R_Y * 0.4, -Math.PI / 6, 0, Math.PI * 2);
+          ctx.fill();
+
+          // --- カラメル部分 (頭頂部にシンプルに乗るだけのツヤツヤチョコソース風) ---
+          // 波や滴りを一切なくし、帽子のように綺麗な楕円ドームとしてかぶせる
+          const cGrad = ctx.createLinearGradient(0, origin.sy - R_Y * 1.7 + hoverY, 0, origin.sy - R_Y * 1.0 + hoverY);
+          cGrad.addColorStop(0, '#661a00');
+          cGrad.addColorStop(1, '#2b0000');
+
+          ctx.fillStyle = cGrad;
+          ctx.beginPath();
+          // カラメルの底縁（綺麗な楕円）
+          ctx.ellipse(origin.sx + swayX, origin.sy - R_Y * 1.1 + hoverY, R_X * 0.6, R_X * 0.2, 0, 0, Math.PI * 2);
+          // カラメルのドーム
+          ctx.ellipse(origin.sx + swayX, origin.sy - R_Y * 1.1 + hoverY, R_X * 0.6, R_Y * 0.5, 0, Math.PI, Math.PI * 2);
+          ctx.fill();
+
+          // カラメルの強いツヤ
+          ctx.fillStyle = 'rgba(255, 200, 200, 0.7)';
+          ctx.beginPath();
+          ctx.ellipse(origin.sx - R_X * 0.25 + swayX, origin.sy - R_Y * 1.3 + hoverY, R_X * 0.1, R_X * 0.04, -Math.PI / 8, 0, Math.PI * 2);
+          ctx.fill();
+
+          // 追加の影勾配は入れず、丸い接地影のみを使う
+
+          // --- 狂気の目（シンプルで丸い可愛い寄りだが不気味） ---
+          const eyeW = gameState === 'death' ? 20 : 12;
+          const eyeH = gameState === 'death' ? 20 : 14;
+
+          // 白目 (少し暗い赤紫)
+          ctx.fillStyle = gameState === 'death' ? '#ff0000' : '#4a0018';
+          ctx.beginPath(); ctx.ellipse(origin.sx - R_X * 0.3 + swayX, origin.sy - R_Y * 0.6 + hoverY, eyeW * 0.6, eyeH * 0.6, 0, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.ellipse(origin.sx + R_X * 0.3 + swayX, origin.sy - R_Y * 0.5 + hoverY, eyeW * 0.45, eyeH * 0.45, 0, 0, Math.PI * 2); ctx.fill();
+
+          // 瞳孔の追従
+          if (gameState !== 'death') {
+            let px = player.x - e.x, py = player.y - e.y;
+            let pLen = Math.sqrt(px * px + py * py);
+            let gx = pLen > 0 ? (px / pLen) * (eyeW * 0.2) : 0;
+            let gy = pLen > 0 ? (py / pLen) * (eyeH * 0.2) : 0;
+
+            // 綺麗なピンクの瞳孔
+            ctx.fillStyle = '#ff7799';
+            ctx.beginPath(); ctx.arc(origin.sx - R_X * 0.3 + swayX + gx, origin.sy - R_Y * 0.6 + hoverY + gy, eyeW * 0.3, 0, Math.PI * 2); ctx.fill();
+            ctx.beginPath(); ctx.arc(origin.sx + R_X * 0.3 + swayX + gx, origin.sy - R_Y * 0.5 + hoverY + gy, eyeW * 0.2, 0, Math.PI * 2); ctx.fill();
+
+            // はっきりとした白のハイライト（可愛い寄り）
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath(); ctx.arc(origin.sx - R_X * 0.3 - 2 + swayX + gx, origin.sy - R_Y * 0.6 - 2 + hoverY + gy, eyeW * 0.15, 0, Math.PI * 2); ctx.fill();
+            ctx.beginPath(); ctx.arc(origin.sx + R_X * 0.3 - 1.5 + swayX + gx, origin.sy - R_Y * 0.5 - 1.5 + hoverY + gy, eyeW * 0.1, 0, Math.PI * 2); ctx.fill();
+          }
+        }
+        else if (item.type === 'particle') {
+          const origin = isoScale(e.x, e.y, e.z);
+          if (clippedNear(origin.rawCz)) continue;
+          const perspSize = Math.max(1, e.size * Math.max(0.2, Math.min(2.0, PERSPECTIVE_FOV / Math.max(PERSPECTIVE_NEAR, origin.cz))));
+          const size = lerp(e.size, perspSize, perspectiveMix);
+          ctx.fillStyle = `rgba(180, 0, 0, ${Math.min(1, e.life)})`;
+          ctx.fillRect(origin.sx, origin.sy, size, size);
+        }
+      }
+
+      // 霧（夜間のみ）
+      if (!isSafeMode) {
+        ctx.fillStyle = '#ffffff';
+        for (let f of fog) {
+          const fIso = isoScale(f.x, f.y, 0);
+          if (clippedNear(fIso.rawCz)) continue;
+          ctx.globalAlpha = f.alpha;
+          ctx.beginPath();
+          ctx.arc(fIso.sx, fIso.sy, f.size, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.globalAlpha = 1.0;
+      }
+
+      ctx.restore();
+
+      // ================= 照明（Fog of War / ライト層） =================
+      sCtx.globalCompositeOperation = 'source-over';
+      sCtx.clearRect(0, 0, shadowCanvas.width, shadowCanvas.height);
+
+      // 死んだときは視界が真っ赤な闇に呑まれる
+      if (gameState === 'death' || gameState === 'gameover') {
+        sCtx.fillStyle = `rgba(30, 0, 0, ${0.9 + Math.min(deathTimer, 1) * 0.1})`;
+      } else if (isSafeMode) {
+        // 安全モード（昼間）はマルチプライ用の色を白にし、暗闇をなくす
+        sCtx.fillStyle = 'rgba(255, 255, 255, 1)';
+      } else {
+        sCtx.fillStyle = 'rgba(5, 8, 15, 0.96)';
+      }
+      sCtx.fillRect(0, 0, shadowCanvas.width, shadowCanvas.height);
+
+      sCtx.globalCompositeOperation = 'destination-out';
+
+      function punchLight(lx, ly, radius, alpha) {
+        if (lx < -radius || lx > canvas.width + radius || ly < -radius || ly > canvas.height + radius) return;
+        const safeRadius = Math.max(1, radius);
+        const grad = sCtx.createRadialGradient(lx, ly, 0.1, lx, ly, safeRadius);
+        grad.addColorStop(0, `rgba(0,0,0,${alpha})`);
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+        sCtx.fillStyle = grad;
+        sCtx.beginPath();
+        sCtx.arc(lx, ly, safeRadius, 0, Math.PI * 2);
+        sCtx.fill();
+      }
+
+      // プレイヤーの視界ライト（心拍に合わせて脈打つ）
+      const beatPulse = Math.sin(pBreatheTimer * 10) * 15;
+      const pIso = isoScale(player.x, player.y, 0);
+      if (perspectiveMix < 0.98 || pIso.rawCz >= PERSPECTIVE_NEAR) {
+        punchLight(pIso.sx - camX, pIso.sy - camY, 200 + beatPulse, 1.0);
+      }
+
+      // 街ごとの固定光（昼間は無効）
+      if (!isSafeMode) {
+        for (let l of lights) {
+          // チラつき処理
+          if (l.flicker && Math.random() < 0.1) {
+            l.a = Math.random() < 0.5 ? 0 : l.baseA * (0.5 + Math.random() * 0.5);
+          }
+          const lIso = isoScale(l.x, l.y, l.z);
+          if (clippedNear(lIso.rawCz)) continue;
+          punchLight(lIso.sx - camX, lIso.sy - camY, l.r, l.a);
+          const lgIso = isoScale(l.x, l.y, 0);
+          if (clippedNear(lgIso.rawCz)) continue;
+          punchLight(lgIso.sx - camX, lgIso.sy - camY, l.r * 0.8, l.a * 0.4);
+        }
+      }
+
+      // プリンの発光（禍々しい赤黒いオーラ）
+      if (pudding) {
+        const puIso = isoScale(pudding.x, pudding.y, 20 + pudding.hoverY);
+        const pAura = gameState === 'death' ? 500 : 200; // 死の瞬間オーラが広がる
+        if (perspectiveMix < 0.98 || puIso.rawCz >= PERSPECTIVE_NEAR) {
+          punchLight(puIso.sx - camX, puIso.sy - camY, pAura, 0.6);
+        }
+      }
+
+      // 完成した影キャンバスを上から合成、ただし乗算等で質感を上げる
+      if (!isSafeMode) {
+        ctx.globalCompositeOperation = 'multiply';
+        ctx.drawImage(shadowCanvas, 0, 0);
+      }
+
+      // --- 美しい光のハロー効果（スクリーン合成） ---
+      if (!isSafeMode) {
+        ctx.globalCompositeOperation = 'screen';
+        for (let l of lights) {
+          const lIso = isoScale(l.x, l.y, l.z);
+          if (clippedNear(lIso.rawCz)) continue;
+          const lx = lIso.sx - camX;
+          const ly = lIso.sy - camY;
+
+          // 画面外の光はスキップしてパフォーマンス確保
+          if (lx < -l.r * 2 || lx > canvas.width + l.r * 2 || ly < -l.r * 2 || ly > canvas.height + l.r * 2) continue;
+          if (l.a <= 0.01) continue;
+
+          const grad = ctx.createRadialGradient(lx, ly, 0, lx, ly, l.r * 1.5);
+          grad.addColorStop(0, `rgba(${l.rgb}, ${l.a * 0.9})`);
+          grad.addColorStop(0.3, `rgba(${l.rgb}, ${l.a * 0.4})`);
+          grad.addColorStop(1, `rgba(${l.rgb}, 0)`);
+
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(lx, ly, l.r * 1.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+      ctx.globalCompositeOperation = 'source-over';
+
+      if (isSafeMode) {
+        ctx.globalCompositeOperation = 'overlay';
+        ctx.fillStyle = 'rgba(255, 238, 190, 0.12)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.globalCompositeOperation = 'soft-light';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.globalCompositeOperation = 'source-over';
+      }
+
+      // ================= ポストプロセス (Bloom & Motion Blur) =================
+      const bloomEnabled = bloomCheck && bloomCheck.checked;
+      const blurEnabled = motionBlurCheck && motionBlurCheck.checked;
+
+      // ブルーム（光があふれ出すレンズエフェクト）
+      if (bloomEnabled) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+
+        // 広範囲の柔らかい光
+        ctx.filter = 'blur(16px)';
+        ctx.globalAlpha = 0.4;
+        ctx.drawImage(canvas, 0, 0);
+
+        // 芯のある強い光
+        ctx.filter = 'blur(4px)';
+        ctx.globalAlpha = 0.3;
+        ctx.drawImage(canvas, 0, 0);
+
+        ctx.restore();
+      }
+
+      // モーションブラー（残像エフェクト）
+      if (blurEnabled) {
+        // 現フレームを半透明で蓄積し、バッファをそのまま表示する
+        blurCtx.globalCompositeOperation = 'source-over';
+        blurCtx.globalAlpha = 0.5;
+        blurCtx.drawImage(canvas, 0, 0);
+
+        ctx.save();
+        ctx.globalCompositeOperation = 'copy';
+        ctx.drawImage(blurCanvas, 0, 0);
+        ctx.restore();
+      } else {
+        // オフ時は残像バッファを常に最新フレームへ同期
+        blurCtx.globalCompositeOperation = 'copy';
+        blurCtx.globalAlpha = 1.0;
+        blurCtx.drawImage(canvas, 0, 0);
+      }
+
+      animationFrameId = requestAnimationFrame(gameLoop);
+    }
+  </script>
+</body>
+
+</html>
